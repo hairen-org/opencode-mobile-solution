@@ -89,6 +89,24 @@ describe('MessageCard rendering boundary', () => {
     expect(latestTimeline).toHaveBeenCalledWith('message-1');
   });
 
+  it('labels an attached file by name, without printing its bytes', async () => {
+    const withFile = {
+      info: { id: 'message-2', sessionID: 'session-1', role: 'user' },
+      parts: [
+        { id: 'part-1', messageID: 'message-2', sessionID: 'session-1', type: 'text', text: 'look' },
+        { id: 'part-2', messageID: 'message-2', sessionID: 'session-1', type: 'file', mime: 'image/jpeg', filename: 'shot.jpg', url: 'data:image/jpeg;base64,SECRETBYTES' },
+      ],
+    } as MessageWithParts;
+    let screen: ReactTestRenderer | undefined;
+    await act(async () => {
+      screen = create(<MessageCard message={withFile} />);
+    });
+
+    const label = screen!.root.findByProps({ testID: 'message-file-message-2-1' });
+    expect(JSON.stringify(label.props.children)).toContain('shot.jpg');
+    expect(JSON.stringify(screen!.toJSON())).not.toContain('SECRETBYTES');
+  });
+
   it('rebuilds the card when the immutable message value changes', async () => {
     let screen: ReactTestRenderer | undefined;
     await act(async () => {

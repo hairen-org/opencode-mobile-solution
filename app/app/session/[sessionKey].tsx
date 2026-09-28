@@ -41,7 +41,9 @@ import {
   useOpenCodeMobileStore,
 } from '@/src/store/mobile-store';
 import { palette } from '@/src/ui/palette';
+import { pickAttachments, type AttachmentSource } from '@/src/ux/attachment-picker';
 import { appendClipboardText, enterFileReferenceMode } from '@/src/ux/prompt-accessories';
+import { formatAttachmentSize, type PromptAttachment } from '@/src/ux/prompt-attachments';
 import { applyPromptSuggestion, getPromptAssistTrigger } from '@/src/ux/prompt-assist';
 import { createPromptAssistContext } from '@/src/ux/prompt-context';
 import { sortMessagesChronologically } from '@/src/ux/message-order';
@@ -138,6 +140,8 @@ export default function SessionScreen() {
   const [showActions, setShowActions] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
+  const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
+  const [attachVisible, setAttachVisible] = useState(false);
   const [transcriptAtBottom, setTranscriptAtBottom] = useState(true);
   const [transcriptWindowSize, setTranscriptWindowSize] = useState(INITIAL_TRANSCRIPT_WINDOW);
   const transcriptRef = useRef<VirtualizedTranscriptHandle>(null);
@@ -227,7 +231,7 @@ export default function SessionScreen() {
   const running = isRunningStatus(status);
   const pendingPermissions = useMemo(() => getPendingPermissions(transcript), [transcript]);
   const promptBlocked = isPromptBlocked(transcript) || permissions.length > 0 || questions.length > 0;
-  const canSend = Boolean(ref && contract && contractFresh && selection?.agentName && selection.model && prompt.trim() && !promptBlocked);
+  const canSend = Boolean(ref && contract && contractFresh && selection?.agentName && selection.model && (prompt.trim() || attachments.length > 0) && !promptBlocked);
   const targetStatuses = useMemo(() => {
     if (!ref) return {};
     return Object.fromEntries(
@@ -309,6 +313,16 @@ export default function SessionScreen() {
   const reportError = useCallback((error: unknown) => {
     setActionError(error instanceof Error ? error.message : String(error));
   }, []);
+
+  const addAttachments = useCallback(async (source: AttachmentSource) => {
+    try {
+      const picked = await pickAttachments(source, attachments);
+      if (picked.attachments.length > 0) setAttachments((current) => [...current, ...picked.attachments]);
+      setActionError(picked.rejected.length > 0 ? picked.rejected.join('\n') : null);
+    } catch (error) {
+      reportError(error);
+    }
+  }, [attachments, reportError]);
 
   const navigateTo = useCallback((next: SessionRef) => {
     if (ref && routeSessionKey(ref) === routeSessionKey(next)) return;
@@ -501,6 +515,24 @@ export default function SessionScreen() {
               ))}
             </ScrollView>
           ) : null}
+          {attachments.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachmentRow} testID="session-attachments">
+              {attachments.map((attachment) => (
+                <View key={attachment.id} testID={`session-attachment-${attachment.id}`} style={styles.attachmentChip}>
+                  <Text numberOfLines={1} style={styles.attachmentName}>{attachment.filename}</Text>
+                  <Text style={styles.subtitle}>{formatAttachmentSize(attachment.size)}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${attachment.filename}`}
+                    testID={`session-attachment-remove-${attachment.id}`}
+                    hitSlop={8}
+                    onPress={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}>
+                    <SymbolView name={{ ios: 'xmark.circle.fill', android: 'cancel', web: 'cancel' }} tintColor={palette.textMuted} size={14} />
+                  </Pressable>
+                </View>
+              ))}
+            </ScrollView>
+          ) : null}
           <View style={styles.promptRow}>
             <TextInput
               value={prompt}
@@ -516,10 +548,18 @@ export default function SessionScreen() {
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Attach file reference"
-              testID="session-accessory-attach"
+              accessibilityLabel="Mention an agent, session or file on the machine"
+              testID="session-accessory-reference"
               style={styles.smallButton}
               onPress={() => setPrompt((current) => enterFileReferenceMode(current))}>
+              <SymbolView name={{ ios: 'at', android: 'alternate_email', web: 'alternate_email' }} tintColor={palette.textMuted} size={17} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Attach a photo or file"
+              testID="session-accessory-attach"
+              style={styles.smallButton}
+              onPress={() => (Platform.OS === 'web' ? void addAttachments('files') : setAttachVisible(true))}>
               <SymbolView name={{ ios: 'paperclip', android: 'attach_file', web: 'attach_file' }} tintColor={palette.textMuted} size={17} />
             </Pressable>
             <Pressable
@@ -542,13 +582,19 @@ export default function SessionScreen() {
               onPress={async () => {
                 if (!canSend) return;
                 const text = prompt;
+                const sending = attachments;
                 setPrompt('');
+                setAttachments([]);
                 setActionError(null);
-                try {
-                  const sent = await store.sendPrompt(text);
-                  if (!sent) setPrompt((current) => current || text);
-                } catch (error) {
+                const restore = () => {
                   setPrompt((current) => current || text);
+                  setAttachments((current) => (current.length > 0 ? current : sending));
+                };
+                try {
+                  const sent = await store.sendPrompt(text, sending);
+                  if (!sent) restore();
+                } catch (error) {
+                  restore();
                   reportError(error);
                 }
               }}>
@@ -576,6 +622,17 @@ export default function SessionScreen() {
             {pendingPermissions.length + permissions.length ? <Text style={styles.permission}>{pendingPermissions.length + permissions.length} permission pending</Text> : null}
           </ScrollView>
         </View>
+
+        <ActionModal
+          title="Attach"
+          visible={attachVisible}
+          onClose={() => setAttachVisible(false)}
+          onActionError={reportError}
+          items={[
+            { id: 'attach-photos', label: 'Photo library', detail: 'Images, sent to the model with your message', onPress: () => addAttachments('photos') },
+            { id: 'attach-files', label: 'Files', detail: 'An image or a PDF from Files', onPress: () => addAttachments('files') },
+          ]}
+        />
 
         <ActionModal
           title="Session"
@@ -817,6 +874,9 @@ const styles = StyleSheet.create({
   promptRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 3 },
   promptInput: { flex: 1, minHeight: 34, maxHeight: 84, paddingHorizontal: 3, paddingVertical: 5, fontSize: 13, color: palette.text },
   smallButton: { width: 28, height: 30, alignItems: 'center', justifyContent: 'center' },
+  attachmentRow: { gap: 5, paddingVertical: 2 },
+  attachmentChip: { maxWidth: 200, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 7, borderWidth: 1, borderColor: palette.borderSubtle, backgroundColor: palette.panel },
+  attachmentName: { flexShrink: 1, fontSize: 11, fontWeight: '700', color: palette.text },
   sendButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: palette.primary },
   disabled: { opacity: 0.4 },
   metadata: { minHeight: 24, alignItems: 'center', gap: 4, paddingRight: 8 },

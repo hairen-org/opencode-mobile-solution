@@ -916,6 +916,88 @@ describe('mobile store composite relay contract', () => {
     expect(failureCalls).toHaveLength(1);
   });
 
+  describe('attachments', () => {
+    const image = { id: 'a1', filename: 'shot.jpg', mime: 'image/jpeg', size: 3, dataUrl: 'data:image/jpeg;base64,AAAA' };
+    const pdf = { id: 'p1', filename: 'paper.pdf', mime: 'application/pdf', size: 3, dataUrl: 'data:application/pdf;base64,AAAA' };
+
+    async function storeWithModel(capabilities?: Record<string, unknown>, promptMode: 'ask' | 'shell' = 'ask') {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/session/session-1/prompt_async?')) return emptyResponse();
+        if (url.includes('/session/session-1/message?')) return jsonResponse([]);
+        if (url.includes('/question?')) return jsonResponse([]);
+        throw new Error(`unexpected request ${url}`);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { executionScopeKey, sessionStateKey, useOpenCodeMobileStore } = await import('./mobile-store');
+      const ref = { connectionId: host.id, relayTargetID: 'mac', sessionId: 'session-1' };
+      const key = sessionStateKey(ref);
+      const scope = executionScopeKey(ref, '/repo');
+      const contract = testMachineContract(ref, '/repo');
+      if (capabilities) contract.providers![0].models['gpt-5.5'].capabilities = capabilities;
+      useOpenCodeMobileStore.setState({
+        connections: [host],
+        activeConnectionId: host.id,
+        activeSessionRef: ref,
+        activeSessionKey: key,
+        activeSessionId: ref.sessionId,
+        promptMode,
+        sessions: { [host.id]: [{ id: ref.sessionId, relayTargetID: 'mac', directory: '/repo' }] },
+        sessionSelections: { [key]: { agentName: 'build', model: { providerID: 'openai', modelID: 'gpt-5.5' } } },
+        machineContracts: { [scope]: contract },
+        contractLoadStates: { [scope]: { status: 'fresh', attemptedAt: contract.fetchedAt, verifiedAt: contract.fetchedAt, error: null } },
+      });
+      const dispatched = () => fetchMock.mock.calls
+        .filter(([input]) => String(input).includes('/prompt_async?'))
+        .map(([, init]) => JSON.parse(String(init?.body)) as { parts: unknown[] });
+      return { store: useOpenCodeMobileStore, key, dispatched };
+    }
+
+    it('sends each attachment as a file part after the text', async () => {
+      const { store, dispatched } = await storeWithModel({ attachment: true, input: { image: true, pdf: true } });
+
+      await expect(store.getState().sendPrompt('What is in these?', [image, pdf])).resolves.toBe('session-1');
+
+      expect(dispatched()).toHaveLength(1);
+      expect(dispatched()[0].parts).toEqual([
+        { type: 'text', text: 'What is in these?' },
+        { type: 'file', mime: 'image/jpeg', filename: 'shot.jpg', url: 'data:image/jpeg;base64,AAAA' },
+        { type: 'file', mime: 'application/pdf', filename: 'paper.pdf', url: 'data:application/pdf;base64,AAAA' },
+      ]);
+    });
+
+    it('sends an attachment with no text at all', async () => {
+      const { store, dispatched } = await storeWithModel();
+
+      await expect(store.getState().sendPrompt('   ', [image])).resolves.toBe('session-1');
+
+      expect(dispatched()[0].parts).toEqual([
+        { type: 'file', mime: 'image/jpeg', filename: 'shot.jpg', url: 'data:image/jpeg;base64,AAAA' },
+      ]);
+      expect(store.getState().promptHistory).not.toContain('');
+    });
+
+    it('refuses before sending when the model says it cannot read the attachment', async () => {
+      const { store, key, dispatched } = await storeWithModel({ attachment: true, input: { image: true, pdf: false } });
+
+      await expect(store.getState().sendPrompt('Summarise', [pdf])).resolves.toBeNull();
+
+      expect(dispatched()).toHaveLength(0);
+      expect(store.getState().sessionErrors[key]).toMatch(/GPT-5\.5.*PDF/);
+    });
+
+    it('refuses attachments on a slash command or a shell line instead of dropping them', async () => {
+      const slash = await storeWithModel();
+      await expect(slash.store.getState().sendPrompt('/review', [image])).resolves.toBeNull();
+      expect(slash.dispatched()).toHaveLength(0);
+      expect(slash.store.getState().sessionErrors[slash.key]).toMatch(/attachment/i);
+
+      const shell = await storeWithModel(undefined, 'shell');
+      await expect(shell.store.getState().sendPrompt('!ls', [image])).resolves.toBeNull();
+      expect(shell.dispatched()).toHaveLength(0);
+    });
+  });
+
   it('learns a machine\'s agents and models without a session existing there', async () => {
     // A fresh install has no session anywhere, so the contract cache is empty and
     // the new-session form would have nothing to offer.

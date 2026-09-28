@@ -49,6 +49,14 @@
       ],
       "expo-secure-store",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow OpenCode to attach photos you choose to a message.",
+          "cameraPermission": "Allow OpenCode to scan relay pairing QR codes.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-camera",
         {
           "cameraPermission": "Allow OpenCode to scan relay pairing QR codes.",

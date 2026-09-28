@@ -8,6 +8,7 @@ import {
   type RequestPolicy,
 } from '@/src/opencode/client';
 import {
+  findContractModel,
   flattenConfiguredModels,
   resolvePromptSelection,
   variantsForModel,
@@ -52,6 +53,7 @@ import {
 } from '@/src/ux/session-interactions';
 import type { QuestionSubmission } from '@/src/ux/question-request';
 import { sortMessagesChronologically } from '@/src/ux/message-order';
+import { toFilePart, unsupportedAttachmentReason, type PromptAttachment } from '@/src/ux/prompt-attachments';
 import type { ThinkingLevel } from '@/src/ux/tui-actions';
 import { sessionKey, type SessionRef } from '@/src/ux/session-forest';
 
@@ -210,7 +212,7 @@ export interface MobileStore {
     relayTargetID?: string;
     directory?: string;
   }): Promise<boolean>;
-  sendPrompt(text: string): Promise<string | null>;
+  sendPrompt(text: string, attachments?: readonly PromptAttachment[]): Promise<string | null>;
   /** Removes legacy records; it never dispatches them. */
   flushQueuedPrompts(connectionId?: string): Promise<void>;
   renameSession(ref: SessionInput, title: string): Promise<void>;
@@ -847,9 +849,9 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
     }
   },
 
-  async sendPrompt(text) {
+  async sendPrompt(text, attachments = []) {
     const trimmed = text.trim();
-    if (!trimmed) return null;
+    if (!trimmed && attachments.length === 0) return null;
     const ref = get().activeSessionRef;
     if (!ref) {
       set({ error: 'Select an existing session before sending a message.' });
@@ -877,6 +879,16 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
       set((state) => ({ error: message, sessionErrors: { ...state.sessionErrors, [key]: message } }));
       return null;
     }
+    if (attachments.length > 0) {
+      const model = findContractModel(contract, selection.model);
+      const blocked = get().promptMode === 'shell' || parseSlashCommand(trimmed)
+        ? 'Attachments go with a normal message, not with a shell line or a slash command.'
+        : unsupportedAttachmentReason(attachments, model?.model.capabilities, model?.modelName ?? selection.model.modelID);
+      if (blocked) {
+        set((state) => ({ error: blocked, sessionErrors: { ...state.sessionErrors, [key]: blocked } }));
+        return null;
+      }
+    }
     const dispatch: PromptDispatchOptions = {
       agent: selection.agentName,
       model: selection.model,
@@ -884,14 +896,14 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
       directory: directoryForSession(session),
     };
     try {
-      await dispatchPrompt(clientFor(connection, ref.relayTargetID), ref.sessionId, trimmed, get().promptMode, dispatch);
+      await dispatchPrompt(clientFor(connection, ref.relayTargetID), ref.sessionId, trimmed, attachments, get().promptMode, dispatch);
     } catch (error) {
       const message = errorMessage(error);
       set((state) => ({ error: message, sessionErrors: { ...state.sessionErrors, [key]: message } }));
-      get().recordPromptHistory(trimmed);
+      if (trimmed) get().recordPromptHistory(trimmed);
       return null;
     }
-    get().recordPromptHistory(trimmed);
+    if (trimmed) get().recordPromptHistory(trimmed);
     await openSessionInBackground(ref, connection, get, set);
     return ref.sessionId;
   },
@@ -1763,6 +1775,7 @@ function dispatchPrompt(
   client: OpenCodeClient,
   sessionId: string,
   text: string,
+  attachments: readonly PromptAttachment[],
   promptMode: PromptMode,
   dispatch: PromptDispatchOptions,
 ) {
@@ -1777,7 +1790,11 @@ function dispatchPrompt(
   if (slash) {
     return client.sendCommand(sessionId, slash.command, slash.args, dispatch);
   }
-  return client.sendAsync(sessionId, [{ type: 'text', text }], dispatch);
+  const parts: MessagePart[] = [
+    ...(text ? [{ type: 'text' as const, text }] : []),
+    ...attachments.map(toFilePart),
+  ];
+  return client.sendAsync(sessionId, parts, dispatch);
 }
 
 function clientFor(connection: HostConnection, relayTargetID?: string) {

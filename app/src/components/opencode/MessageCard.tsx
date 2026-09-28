@@ -565,6 +565,15 @@ const PartView = memo(function PartView({
     );
   }
 
+  if (part.type === 'file') {
+    const record = part as Record<string, unknown>;
+    return (
+      <Text selectable testID={`message-file-${messageId}-${partIndex}`} style={styles.fileLabel}>
+        {`📎 ${stringValue(record.filename) ?? stringValue(record.mime) ?? 'Attachment'}`}
+      </Text>
+    );
+  }
+
   return null;
 });
 
@@ -687,6 +696,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
+  },
+  fileLabel: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+    fontSize: 11,
+    color: palette.textMuted,
+    backgroundColor: palette.backgroundElement,
   },
   compaction: {
     paddingVertical: 6,

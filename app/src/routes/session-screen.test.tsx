@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   routeParams: { sessionKey: '' },
   replace: vi.fn(),
   clipboardRead: vi.fn(async () => 'clipboard'),
+  pickAttachments: vi.fn(),
   clipboardWrite: vi.fn(async () => undefined),
   keyboardDismiss: vi.fn(),
   scrollToLatest: vi.fn(),
@@ -77,7 +78,7 @@ const mocks = vi.hoisted(() => ({
     subscribeToActiveHost: vi.fn(),
     unsubscribeFromHost: vi.fn(),
     searchFileReferences: vi.fn(async () => []),
-    sendPrompt: vi.fn(async () => 'root'),
+    sendPrompt: vi.fn(async (): Promise<string | null> => 'root'),
     respondToPermission: vi.fn(async () => undefined),
     respondToQuestion: vi.fn(async () => undefined),
     rejectQuestion: vi.fn(async () => undefined),
@@ -186,6 +187,8 @@ vi.mock('@/src/components/opencode/MessageCard', async () => {
     },
   };
 });
+
+vi.mock('@/src/ux/attachment-picker', () => ({ pickAttachments: mocks.pickAttachments }));
 
 vi.mock('@/src/components/opencode/ActionModal', async () => {
   const React = await import('react');
@@ -339,7 +342,53 @@ describe('SessionScreen composite route', () => {
 
     await act(async () => find(screen, 'session-prompt-input').props.onChangeText('continue existing')); 
     await act(async () => find(screen, 'send-prompt-button').props.onPress());
-    expect(mocks.state.sendPrompt).toHaveBeenCalledWith('continue existing');
+    expect(mocks.state.sendPrompt).toHaveBeenCalledWith('continue existing', []);
+  });
+
+  it('keeps the @ mention on its own button, separate from attaching', async () => {
+    const screen = await renderScreen();
+    await act(async () => find(screen, 'session-accessory-reference').props.onPress());
+    expect(find(screen, 'session-prompt-input').props.value).toBe('@');
+    expect(all(screen, 'modal-Attach')).toHaveLength(0);
+  });
+
+  it('attaches a picked photo, sends it with no text, and clears it after sending', async () => {
+    const photo = { id: 'att-1', filename: 'shot.jpg', mime: 'image/jpeg', size: 2048, dataUrl: 'data:image/jpeg;base64,AAAA' };
+    mocks.pickAttachments.mockReset();
+    mocks.pickAttachments.mockResolvedValue({ attachments: [photo], rejected: [] });
+    const screen = await renderScreen();
+    expect(find(screen, 'send-prompt-button').props.disabled).toBe(true);
+
+    await act(async () => find(screen, 'session-accessory-attach').props.onPress());
+    expect(find(screen, 'session-prompt-input').props.value).toBe('');
+    await act(async () => find(screen, 'action-attach-photos').props.onPress());
+    expect(mocks.pickAttachments).toHaveBeenCalledWith('photos', []);
+    expect(text(screen)).toContain('shot.jpg');
+    expect(text(screen)).toContain('2 KB');
+    expect(find(screen, 'send-prompt-button').props.disabled).toBe(false);
+
+    await act(async () => find(screen, 'send-prompt-button').props.onPress());
+    expect(mocks.state.sendPrompt).toHaveBeenCalledWith('', [photo]);
+    expect(all(screen, 'session-attachment-att-1')).toHaveLength(0);
+  });
+
+  it('keeps the attachment when sending fails, and lets it be removed', async () => {
+    const photo = { id: 'att-2', filename: 'plot.png', mime: 'image/png', size: 10, dataUrl: 'data:image/png;base64,AAAA' };
+    mocks.pickAttachments.mockReset();
+    mocks.pickAttachments.mockResolvedValue({ attachments: [photo], rejected: ['big.pdf is 30 MB; PDFs are limited to 20 MB.'] });
+    mocks.state.sendPrompt.mockResolvedValueOnce(null);
+    const screen = await renderScreen();
+
+    await act(async () => find(screen, 'session-accessory-attach').props.onPress());
+    await act(async () => find(screen, 'action-attach-files').props.onPress());
+    expect(text(screen)).toContain('PDFs are limited to 20 MB');
+
+    await act(async () => find(screen, 'send-prompt-button').props.onPress());
+    expect(find(screen, 'session-attachment-att-2')).toBeTruthy();
+
+    await act(async () => find(screen, 'session-attachment-remove-att-2').props.onPress());
+    expect(all(screen, 'session-attachment-att-2')).toHaveLength(0);
+    expect(find(screen, 'send-prompt-button').props.disabled).toBe(true);
   });
 
   it('surfaces a standalone permission without a transcript permission part and blocks prompt dispatch', async () => {
