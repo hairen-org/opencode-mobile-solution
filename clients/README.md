@@ -51,6 +51,8 @@ DOMAIN-SUFFIX,ts.net,DIRECT
 `<主机>.<tailnet>.ts.net` 发起的请求要靠第三条才命中。顺序也重要，必须排在
 `FINAL` 之前，放最前面最稳妥，否则会被上面的代理规则先吃掉。
 
+IPv6 用不了、全程走中继时，还要再做一步 `skip-proxy`，见文末「特别补丁」。
+
 改完**完全断开隧道再重连**。规则只在建立隧道时加载一次，光按保存不生效——
 这一点导致过一次误判，规则明明是对的却测出不通。
 
@@ -180,3 +182,41 @@ WireGuard 数据面没建立时它照样 pong。判断数据面看 `rx`/`tx` 是
 
 **响应时间比状态码更能说明问题。** 0.07 秒是直连，0.4 秒以上是中继，
 后者虽然能用但会频繁超时。
+
+## 特别补丁：IPv6 不可用、全程走中继时（2026-10-01）
+
+**适用范围。** 这一节只在 IPv6 用不了的时候才需要，例如分机在香港家宽上没有 IPv6，
+或者跨境流量被拦、两端只能经 DERP 中继互通。IPv6 直连正常时，上文 Shadowrocket
+小节的三条规则就够了，本节可以跳过。
+
+来源：2026-10-01 一次排查。主机在国内教育网，连香港中继的流量被干扰，已改走代理；
+分机 Mac 在香港、没有 IPv6，Shadowrocket 同时开着。修完后 ComfyUI 和 cockpit 都恢复了。
+本节只改文档，不涉及代码。
+
+### Shadowrocket：把 tailnet 加进 skip-proxy
+
+规则只管进了隧道的包。浏览器和 Electron 桌面分机会先把请求交给**系统代理**，
+也就是 Shadowrocket 的本地端口（常见 `127.0.0.1:1082`）。Shadowrocket 按规则判为
+DIRECT，可它自己发起的直连不经过 Tailscale 的 utun，到不了 tailnet，于是回
+`CONNECT tunnel failed, response 503`，页面表现为报错或一直加载。
+
+在 `[General]` 的 `skip-proxy` 末尾加两项，让这些程序根本不进系统代理：
+
+```
+skip-proxy = <原有条目>, *.ts.net, 100.64.0.0/10
+```
+
+完全断开隧道再重连，然后用 `scutil --proxy` 检查，`ExceptionsList` 里应当出现这两项。
+iPhone 上的 Shadowrocket 不会自动同步，手机要同时开 Shadowrocket 时照样改一遍。
+
+### 用 curl 模拟浏览器走系统代理
+
+判断上面这一步有没有生效，不能直接跑 curl。curl 读 `NO_PROXY`，会自动绕开代理，
+测出来总是通的，结论是错的。要先去掉环境变量，再强制指定代理端口：
+
+```bash
+env -u no_proxy -u NO_PROXY curl -x http://127.0.0.1:<代理端口> -s -o /dev/null -w '%{http_code}\n' --max-time 20 https://<主机>.<tailnet>.ts.net:8443/health
+```
+
+返回 503 或超时，说明系统代理这一层没绕开，回去检查 `skip-proxy`。
+这项检查同样只在 IPv6 不可用的场景下才有必要。
