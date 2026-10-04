@@ -725,6 +725,37 @@ describe('OpenCodeClient', () => {
     expect(signal?.aborted).toBe(true);
   });
 
+  it('subscribes to the machine-wide stream and unwraps each event with its directory', async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({
+        done: false,
+        value: new TextEncoder().encode(
+          'data: {"payload":{"type":"server.connected","properties":{}}}\n\n'
+          + 'data: {"directory":"/repo","payload":{"type":"permission.asked","properties":{"id":"per_1","sessionID":"child"}}}\n\n',
+        ),
+      })
+      .mockImplementationOnce(() => new Promise(() => undefined));
+    const fetchMock = vi.fn().mockResolvedValueOnce(streamResponse(read));
+    const client = new OpenCodeClient(bearerConnection, { fetch: fetchMock });
+    const events: unknown[] = [];
+    const states: string[] = [];
+
+    const unsubscribe = client.subscribeEvents((event) => events.push(event), {
+      scope: 'global',
+      onConnectionState: (state) => states.push(state),
+    });
+    await eventually(() => {
+      expect(events).toEqual([
+        { type: 'server.connected', properties: {} },
+        { type: 'permission.asked', properties: { id: 'per_1', sessionID: 'child' }, directory: '/repo' },
+      ]);
+      expect(states).toContain('live');
+    });
+    unsubscribe();
+    expect(fetchMock.mock.calls[0][0]).toBe('https://opencode.example.com/global/event');
+  });
+
   it('reconnects an ended SSE stream and invokes the refetch boundary only after the new stream connects', async () => {
     const firstRead = vi
       .fn()

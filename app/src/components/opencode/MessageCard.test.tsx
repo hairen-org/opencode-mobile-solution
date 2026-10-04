@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageWithParts } from '@/src/opencode/types';
 
 import { MessageCard } from './MessageCard';
+import { TranscriptContext } from './transcript-context';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -78,7 +79,7 @@ describe('MessageCard rendering boundary', () => {
     expect(mocks.markdownRenders).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      screen!.root.findByProps({ testID: 'message-card-message-1' }).props.onPress();
+      screen!.root.findByProps({ testID: 'message-actions-message-1' }).props.onPress();
     });
     const actionModal = screen!.root.findByType('ActionModal' as any);
     const timeline = actionModal.props.items.find((item: { id: string }) => item.id === 'timeline');
@@ -87,6 +88,33 @@ describe('MessageCard rendering boundary', () => {
     });
     expect(firstTimeline).not.toHaveBeenCalled();
     expect(latestTimeline).toHaveBeenCalledWith('message-1');
+  });
+
+  it('opens Select text on the whole conversation, scrolled to this message', async () => {
+    const reply = {
+      info: { id: 'message-2', sessionID: 'session-1', role: 'assistant' },
+      parts: [{ id: 'part-2', messageID: 'message-2', sessionID: 'session-1', type: 'text', text: 'world' }],
+    } as MessageWithParts;
+    const transcript = [message, reply];
+    let screen: ReactTestRenderer | undefined;
+    await act(async () => {
+      screen = create(
+        <TranscriptContext.Provider value={() => transcript}>
+          <MessageCard message={reply} />
+        </TranscriptContext.Provider>,
+      );
+    });
+    await act(async () => {
+      screen!.root.findByProps({ testID: 'message-actions-message-2' }).props.onPress();
+    });
+    const actionModal = screen!.root.findByType('ActionModal' as any);
+    const selectText = actionModal.props.items.find((item: { id: string }) => item.id === 'open-text-view');
+    await act(async () => selectText.onPress());
+    const sheet = screen!.root.findByType('TextViewModal' as any);
+    expect(sheet.props.visible).toBe(true);
+    expect(sheet.props.title).toBe('Conversation');
+    expect(sheet.props.text).toBe('── You ──\nhello\n\n── Assistant ──\nworld');
+    expect(sheet.props.text.slice(sheet.props.focusOffset)).toBe('── Assistant ──\nworld');
   });
 
   it('labels an attached file by name, without printing its bytes', async () => {

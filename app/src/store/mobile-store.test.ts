@@ -1265,6 +1265,84 @@ describe('mobile store composite relay contract', () => {
     useOpenCodeMobileStore.getState().unsubscribeFromHost(host.id);
   });
 
+  it('keeps a subagent\'s pending permission when it re-reads the directory for the parent', async () => {
+    const { OpenCodeClient } = await import('@/src/opencode/client');
+    const childRequest = { id: 'per_child', sessionID: 'child', permission: 'bash', patterns: ['npm test'], metadata: {}, always: [] };
+    vi.spyOn(OpenCodeClient.prototype, 'listPermissions').mockResolvedValue([childRequest]);
+    vi.spyOn(OpenCodeClient.prototype, 'listQuestions').mockResolvedValue([]);
+    const { sessionStateKey, useOpenCodeMobileStore } = await import('./mobile-store');
+    const parent = { connectionId: host.id, relayTargetID: 'mac', sessionId: 'root' };
+    useOpenCodeMobileStore.setState({ connections: [host], activeConnectionId: host.id,
+      sessions: { [host.id]: [
+        { id: 'root', relayTargetID: 'mac', directory: '/repo' },
+        { id: 'child', parentID: 'root', relayTargetID: 'mac', directory: '/repo' },
+      ] },
+      permissions: { [sessionStateKey({ ...parent, sessionId: 'child' })]: [{ ...childRequest, id: 'per_stale' }] },
+    });
+
+    await useOpenCodeMobileStore.getState().refreshPendingRequests(parent);
+
+    const { permissions } = useOpenCodeMobileStore.getState();
+    expect(permissions[sessionStateKey({ ...parent, sessionId: 'child' })]).toEqual([childRequest]);
+    expect(permissions[sessionStateKey(parent)]).toEqual([]);
+  });
+
+  it('follows every directory on the machine with nothing open, and reads what was already pending', async () => {
+    const { OpenCodeClient } = await import('@/src/opencode/client');
+    const handlers: Array<{ handler: (event: any) => void; options?: EventSubscriptionOptions }> = [];
+    vi.spyOn(OpenCodeClient.prototype, 'subscribeEvents').mockImplementation((handler, options) => {
+      handlers.push({ handler, options });
+      return () => undefined;
+    });
+    const pending = { id: 'que_old', sessionID: 'root', questions: [{ header: 'Go', question: 'Proceed?', options: [] }] };
+    const listQuestions = vi.spyOn(OpenCodeClient.prototype, 'listQuestions').mockResolvedValue([pending]);
+    vi.spyOn(OpenCodeClient.prototype, 'listPermissions').mockResolvedValue([]);
+    const { sessionStateKey, useOpenCodeMobileStore } = await import('./mobile-store');
+    const scope = { connectionId: host.id, relayTargetID: 'mac' };
+    useOpenCodeMobileStore.setState({ connections: [host], activeConnectionId: host.id, activeSessionRef: null,
+      relayTargets: { [host.id]: [{ id: 'mac', name: 'Mac', reachable: true, lastChecked: null }] },
+      sessions: { [host.id]: [
+        { id: 'root', relayTargetID: 'mac', directory: '/repo' },
+        { id: 'child', parentID: 'root', relayTargetID: 'mac', directory: '/repo' },
+      ] },
+    });
+
+    useOpenCodeMobileStore.getState().startAttentionWatch();
+    expect(handlers).toHaveLength(1);
+    expect(handlers[0].options?.scope).toBe('global');
+
+    handlers[0].options?.onConnectionState?.('live');
+    await eventually(() => expect(useOpenCodeMobileStore.getState().questions[sessionStateKey({ ...scope, sessionId: 'root' })]).toEqual([pending]));
+    expect(listQuestions).toHaveBeenCalledWith(expect.objectContaining({ directory: '/repo' }));
+
+    handlers[0].handler({ type: 'permission.asked', directory: '/repo', properties: { id: 'per_live', sessionID: 'child', permission: 'read', patterns: ['/etc/*'], metadata: {}, always: [] } });
+    expect(useOpenCodeMobileStore.getState().permissions[sessionStateKey({ ...scope, sessionId: 'child' })].map((r) => r.id)).toEqual(['per_live']);
+
+    handlers[0].handler({ type: 'permission.replied', directory: '/repo', properties: { sessionID: 'child', requestID: 'per_live', reply: 'once' } });
+    expect(useOpenCodeMobileStore.getState().permissions[sessionStateKey({ ...scope, sessionId: 'child' })]).toEqual([]);
+
+    handlers[0].handler({ type: 'message.updated', properties: { info: { id: 'm', sessionID: 'child', role: 'assistant' } } });
+    expect(useOpenCodeMobileStore.getState().messages[sessionStateKey({ ...scope, sessionId: 'child' })]).toBeUndefined();
+    useOpenCodeMobileStore.getState().stopAttentionWatch();
+  });
+
+  it('answering a subagent\'s permission from the parent removes it where it is filed', async () => {
+    const { OpenCodeClient } = await import('@/src/opencode/client');
+    const respond = vi.spyOn(OpenCodeClient.prototype, 'respondToPermission').mockResolvedValue(undefined);
+    const { sessionStateKey, useOpenCodeMobileStore } = await import('./mobile-store');
+    const parent = { connectionId: host.id, relayTargetID: 'mac', sessionId: 'root' };
+    const childKey = sessionStateKey({ ...parent, sessionId: 'child' });
+    useOpenCodeMobileStore.setState({ connections: [host], activeConnectionId: host.id,
+      sessions: { [host.id]: [{ id: 'root', relayTargetID: 'mac', directory: '/repo' }] },
+      permissions: { [childKey]: [{ id: 'per_child', sessionID: 'child', permission: 'bash', patterns: [], metadata: {}, always: [] }] },
+    });
+
+    await useOpenCodeMobileStore.getState().respondToPermission(parent, 'per_child', 'allow-once');
+
+    expect(respond).toHaveBeenCalledWith('root', 'per_child', expect.anything(), expect.objectContaining({ directory: '/repo' }));
+    expect(useOpenCodeMobileStore.getState().permissions[childKey]).toEqual([]);
+  });
+
   it('refuses ambiguous bare session IDs instead of guessing a relay machine', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

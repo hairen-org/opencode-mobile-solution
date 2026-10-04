@@ -23,6 +23,7 @@ vi.mock('react-native', async () => {
     StyleSheet: { create: <T extends Record<string, unknown>>(styles: T) => styles },
     Text: host('Text'),
     TextInput: host('TextInput'),
+    Platform: { OS: 'ios', select: (options: any) => options.ios ?? options.default },
     View: host('View'),
   };
 });

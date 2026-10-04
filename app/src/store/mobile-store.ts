@@ -54,6 +54,7 @@ import {
 import type { QuestionSubmission } from '@/src/ux/question-request';
 import { sortMessagesChronologically } from '@/src/ux/message-order';
 import { toFilePart, unsupportedAttachmentReason, type PromptAttachment } from '@/src/ux/prompt-attachments';
+import { replaceDirectoryRequests } from '@/src/ux/attention';
 import type { ThinkingLevel } from '@/src/ux/tui-actions';
 import { sessionKey, type SessionRef } from '@/src/ux/session-forest';
 
@@ -177,6 +178,10 @@ export interface MobileStore {
   eventSubscriptionDirectories: Partial<Record<string, string | undefined>>;
   eventConnected: Record<string, boolean>;
   eventConnectionStates: Record<string, SessionTransportState>;
+  /** One machine-wide stream per paired machine, keyed by connection and
+   *  target. It keeps permissions and questions current for every session,
+   *  including subagents nobody has open. */
+  attentionUnsubscribers: Partial<Record<string, () => void>>;
   questionRevision: number;
   hydrate(): Promise<void>;
   addConnection(input: Omit<HostConnection, 'id' | 'lastConnected' | 'isReachable'>): Promise<void>;
@@ -195,6 +200,15 @@ export interface MobileStore {
   refreshActiveHost(options?: { background?: boolean }): Promise<void>;
   subscribeToActiveHost(): void;
   unsubscribeFromHost(connectionId: string): void;
+  startAttentionWatch(): void;
+  stopAttentionWatch(): void;
+  /** Refreshes one host's sessions and machines without touching the screen's
+   *  loading state; concurrent calls share one request. */
+  refreshHostInBackground(connectionId: string): Promise<void>;
+  /** Re-reads pending permissions and questions for a session's directory. */
+  refreshPendingRequests(ref: SessionInput): Promise<void>;
+  /** After the app was in the background: streams may have died silently. */
+  resumeLiveUpdates(): void;
   openSession(ref: SessionInput): Promise<void>;
   loadOlderMessages(ref: SessionInput): Promise<void>;
   searchFileReferences(query: string, ref?: SessionInput): Promise<FileReference[]>;
@@ -330,6 +344,7 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
   stashedPrompts: [],
   queuedPrompts: [],
   eventUnsubscribers: {},
+  attentionUnsubscribers: {},
   eventSubscriptionDirectories: {},
   eventConnected: {},
   eventConnectionStates: {},
@@ -659,6 +674,99 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
       eventConnectionStates: { ...state.eventConnectionStates, ...Object.fromEntries(removedKeys.map((key) => [key, 'idle' as const])) },
     }));
     void flushMobileSessionPersistence().catch(() => undefined);
+  },
+
+  startAttentionWatch() {
+    const state = get();
+    const wanted = new Map<string, { connection: HostConnection; relayTargetID: string }>();
+    for (const connection of state.connections) {
+      const known = state.relayTargets[connection.id];
+      if (!known) {
+        // Events are filed by machine; subscribing before the machines are
+        // known would file them under a key no screen reads. Learn them first;
+        // the caller restarts the watch once they arrive.
+        void get().refreshHostInBackground(connection.id);
+        continue;
+      }
+      const targets = known.map((target) => target.id);
+      for (const relayTargetID of targets.length > 0 ? targets : [DIRECT_RELAY_TARGET_ID]) {
+        wanted.set(JSON.stringify([connection.id, relayTargetID]), { connection, relayTargetID });
+      }
+    }
+    const current = state.attentionUnsubscribers;
+    const stale = Object.keys(current).filter((key) => !wanted.has(key));
+    for (const key of stale) current[key]?.();
+    const started: Record<string, () => void> = {};
+    for (const [key, { connection, relayTargetID }] of wanted) {
+      if (current[key]) continue;
+      const scopeRef = { connectionId: connection.id, relayTargetID, sessionId: '' };
+      const reconcile = () => reconcilePendingRequests(connection, relayTargetID, get, set);
+      started[key] = clientFor(connection, relayTargetID).subscribeEvents(
+        (event) => {
+          if (!ATTENTION_EVENT_TYPES.has(event.type)) return;
+          set((current) => applyServerEvent(current, scopeRef, event));
+          // A request from a session the index has not seen yet (a subagent
+          // that just started) needs its title, and its screen needs it listed.
+          const sessionId = sessionIdFromServerEvent(event);
+          if (event.type.endsWith('.asked') && sessionId && !currentSessionForRef(get(), { ...scopeRef, sessionId })) {
+            void get().refreshHostInBackground(connection.id);
+          }
+        },
+        {
+          scope: 'global',
+          onReconnect: reconcile,
+          onConnectionState: (connectionState) => {
+            if (connectionState === 'live') void reconcile();
+          },
+        },
+      );
+    }
+    set((state) => ({ attentionUnsubscribers: { ...omitKeys(state.attentionUnsubscribers, stale), ...started } }));
+  },
+
+  refreshHostInBackground(connectionId) {
+    const connection = get().connections.find((item) => item.id === connectionId);
+    if (!connection) return Promise.resolve();
+    const existing = hostRefreshFlights.get(connectionId);
+    if (existing) return existing;
+    const flight = refreshHost(connection, { background: true }, get, set).finally(() => {
+      if (hostRefreshFlights.get(connectionId) === flight) hostRefreshFlights.delete(connectionId);
+    });
+    hostRefreshFlights.set(connectionId, flight);
+    return flight;
+  },
+
+  stopAttentionWatch() {
+    for (const unsubscribe of Object.values(get().attentionUnsubscribers)) unsubscribe?.();
+    set({ attentionUnsubscribers: {} });
+  },
+
+  async refreshPendingRequests(input) {
+    let ref: SessionRef;
+    try {
+      ref = resolveSessionInput(input, get());
+    } catch {
+      return;
+    }
+    const connection = connectionForRef(get(), ref);
+    const session = currentSessionForRef(get(), ref);
+    if (!connection || !session) return;
+    await Promise.allSettled([
+      refreshSessionPermissions(ref, connection, get, set),
+      refreshDirectoryQuestions(ref, connection, session, get, set),
+    ]);
+  },
+
+  resumeLiveUpdates() {
+    get().stopAttentionWatch();
+    get().startAttentionWatch();
+    const ref = get().activeSessionRef;
+    if (!ref) return;
+    const unsubscribe = get().eventUnsubscribers[sessionStateKey(ref)];
+    unsubscribe?.();
+    set((state) => ({ eventUnsubscribers: omitKeys(state.eventUnsubscribers, [sessionStateKey(ref)]) }));
+    get().subscribeToActiveHost();
+    void get().refreshPendingRequests(ref);
   },
 
   async openSession(input) {
@@ -1006,8 +1114,9 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
       workspaceQueryForSession(session),
     );
     const key = sessionStateKey(ref);
+    // The request may be filed under a subagent's session rather than this one.
     set((state) => ({
-      permissions: { ...state.permissions, [key]: (state.permissions[key] ?? []).filter((request) => request.id !== permissionId) },
+      permissions: withoutRequest(state.permissions, permissionId),
       permissionErrors: { ...state.permissionErrors, [key]: null },
     }));
   },
@@ -1017,9 +1126,8 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
     const requestID = 'requestID' in payload ? payload.requestID : payload.questionID;
     const body = 'requestID' in payload ? { answers: payload.answers } : createQuestionReplyBody(payload);
     await clientFor(connection, ref.relayTargetID).respondToQuestion(requestID, body, workspaceQueryForSession(session));
-    const key = sessionStateKey(ref);
     set((state) => ({
-      questions: { ...state.questions, [key]: (state.questions[key] ?? []).filter((request) => request.id !== requestID) },
+      questions: withoutRequest(state.questions, requestID),
       questionRevision: state.questionRevision + 1,
     }));
   },
@@ -1027,9 +1135,8 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
   async rejectQuestion(input, requestId) {
     const { ref, connection, session } = requireSessionContext(input, get());
     await clientFor(connection, ref.relayTargetID).rejectQuestion(requestId, workspaceQueryForSession(session));
-    const key = sessionStateKey(ref);
     set((state) => ({
-      questions: { ...state.questions, [key]: (state.questions[key] ?? []).filter((request) => request.id !== requestId) },
+      questions: withoutRequest(state.questions, requestId),
       questionRevision: state.questionRevision + 1,
     }));
   },
@@ -2131,8 +2238,15 @@ async function refreshSessionPermissions(ref: SessionRef, connection: HostConnec
   try {
     const requests = await clientFor(connection, ref.relayTargetID).listPermissions(workspaceQueryForSession(session));
     if (!current()) return;
+    // The list covers the whole directory, subagent sessions included. Keeping
+    // only the open session's entries is what hid a child's request from view.
     set((state) => state.permissions[key] === previous ? {
-      permissions: { ...state.permissions, [key]: requests.filter((request) => request.sessionID === ref.sessionId) },
+      permissions: replaceDirectoryRequests(
+        state.permissions,
+        { connectionId: ref.connectionId, relayTargetID: ref.relayTargetID },
+        sessionIdsInDirectory(state, ref, directoryForSession(session)),
+        requests,
+      ),
       permissionErrors: { ...state.permissionErrors, [key]: null },
     } : {});
   } catch (error) {
@@ -2141,6 +2255,76 @@ async function refreshSessionPermissions(ref: SessionRef, connection: HostConnec
       permissionErrors: { ...state.permissionErrors, [key]: `Could not check pending permissions: ${errorMessage(error)}` },
     } : {});
   }
+}
+
+/** A request may be filed under a subagent's session rather than the open one. */
+function withoutRequest<T extends { id: string }>(record: Record<string, T[]>, requestId: string) {
+  return Object.fromEntries(Object.entries(record).map(([key, requests]) => [key, requests.filter((request) => request.id !== requestId)]));
+}
+
+const ATTENTION_EVENT_TYPES = new Set([
+  'permission.asked',
+  'permission.replied',
+  'question.asked',
+  'question.replied',
+  'question.rejected',
+]);
+
+// How many recently active directories a fresh machine-wide stream re-reads.
+// The stream only carries what happens after it opens, so anything already
+// pending has to be fetched; the long tail of old directories is not worth it.
+const RECONCILE_DIRECTORY_LIMIT = 12;
+
+function sessionIdsInDirectory(state: Pick<MobileStore, 'sessions'>, scope: { connectionId: string; relayTargetID: string }, directory: string | undefined) {
+  return (state.sessions[scope.connectionId] ?? [])
+    .filter((session) => (session.relayTargetID ?? DIRECT_RELAY_TARGET_ID) === scope.relayTargetID && directoryForSession(session) === directory)
+    .map((session) => session.id);
+}
+
+async function refreshDirectoryQuestions(ref: SessionRef, connection: HostConnection, session: Session, get: StoreGet, set: StoreSet) {
+  const revision = get().questionRevision;
+  const questions = await clientFor(connection, ref.relayTargetID).listQuestions(workspaceQueryForSession(session));
+  set((state) => state.questionRevision === revision ? {
+    questions: replaceDirectoryRequests(
+      state.questions,
+      { connectionId: ref.connectionId, relayTargetID: ref.relayTargetID },
+      sessionIdsInDirectory(state, ref, directoryForSession(session)),
+      questions,
+    ),
+  } : {});
+}
+
+async function reconcilePendingRequests(connection: HostConnection, relayTargetID: string, get: StoreGet, set: StoreSet) {
+  const scope = { connectionId: connection.id, relayTargetID };
+  const sessions = (get().sessions[connection.id] ?? [])
+    .filter((session) => (session.relayTargetID ?? DIRECT_RELAY_TARGET_ID) === relayTargetID)
+    .sort(compareSessionsByRecency);
+  const seen = new Set<string>();
+  const representatives: Session[] = [];
+  for (const session of sessions) {
+    const directory = directoryForSession(session);
+    if (!directory || seen.has(directory)) continue;
+    seen.add(directory);
+    representatives.push(session);
+    if (representatives.length >= RECONCILE_DIRECTORY_LIMIT) break;
+  }
+  const client = clientFor(connection, relayTargetID);
+  await Promise.allSettled(representatives.map(async (session) => {
+    const query = workspaceQueryForSession(session);
+    const revision = get().questionRevision;
+    const [permissions, questions] = await Promise.allSettled([client.listPermissions(query), client.listQuestions(query)]);
+    set((state) => {
+      const ids = sessionIdsInDirectory(state, scope, directoryForSession(session));
+      return {
+        ...(permissions.status === 'fulfilled'
+          ? { permissions: replaceDirectoryRequests(state.permissions, scope, ids, permissions.value) }
+          : {}),
+        ...(questions.status === 'fulfilled' && state.questionRevision === revision
+          ? { questions: replaceDirectoryRequests(state.questions, scope, ids, questions.value) }
+          : {}),
+      };
+    });
+  }));
 }
 
 function mergeQuestionsForTarget(

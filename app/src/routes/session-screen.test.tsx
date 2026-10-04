@@ -402,6 +402,18 @@ describe('SessionScreen composite route', () => {
     expect(mocks.state.respondToPermission).toHaveBeenCalledWith(rootRef, 'per_gate', 'allow-once', undefined);
   });
 
+  it('shows a subagent\'s permission on the parent, labelled, without locking the parent prompt', async () => {
+    mocks.state.permissions[childKey] = [{ id: 'per_child', sessionID: 'child', permission: 'bash', patterns: ['npm test'], metadata: { command: 'npm test' }, always: [] }];
+    const screen = await renderScreen();
+    expect(find(screen, 'permission-request-per_child')).toBeTruthy();
+    expect(text(screen)).toContain('From subagent');
+    await act(async () => find(screen, 'session-prompt-input').props.onChangeText('keep going'));
+    expect(find(screen, 'send-prompt-button').props.disabled).toBe(false);
+    await act(async () => find(screen, 'permission-request-per_child-allow-once').props.onPress());
+    expect(mocks.state.respondToPermission).toHaveBeenCalledWith(rootRef, 'per_child', 'allow-once', undefined);
+    delete mocks.state.permissions[childKey];
+  });
+
   it('renders the complete conversation component at arbitrary depth', async () => {
     const screen = await renderScreen();
     await act(async () => find(screen, 'session-hierarchy-button').props.onPress());

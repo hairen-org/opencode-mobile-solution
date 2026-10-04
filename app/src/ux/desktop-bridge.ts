@@ -16,6 +16,9 @@ export interface DesktopShellHost {
   setContext(context: string): void;
   onAction(handler: (payload: { action: string; context?: string }) => void): () => void;
   describeKeymap?(): Promise<unknown>;
+  /** System notification; clicking it reopens the window on `route`. */
+  notify?(payload: { title: string; body?: string; route?: string }): void;
+  onNavigate?(handler: (route: string) => void): () => void;
 }
 
 export interface DesktopActionBridge {

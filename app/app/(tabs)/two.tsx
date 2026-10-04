@@ -17,6 +17,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { Session } from '@/src/opencode/types';
 import { useOpenCodeMobileStore } from '@/src/store/mobile-store';
 import { palette } from '@/src/ui/palette';
+import { attentionCountsByRoot, collectAttention } from '@/src/ux/attention';
 import { filterAndSortRootSessions, sessionSearchText, sessionUpdatedAt } from '@/src/ux/session-list';
 import { encodeSessionRouteKey, sessionKey, sessionRefForSession } from '@/src/ux/session-forest';
 
@@ -27,6 +28,8 @@ export default function SessionsScreen() {
     connections,
     sessions,
     sessionStatuses,
+    permissions,
+    questions,
     loading,
     error,
     hostSyncErrors,
@@ -43,6 +46,8 @@ export default function SessionsScreen() {
     connections: state.connections,
     sessions: state.sessions,
     sessionStatuses: state.sessionStatuses,
+    permissions: state.permissions,
+    questions: state.questions,
     loading: state.loading,
     error: state.error,
     hostSyncErrors: state.hostSyncErrors,
@@ -111,6 +116,12 @@ export default function SessionsScreen() {
     [activeConnectionId],
   );
 
+  // Counted against the root, so a parent shows what its subagents wait on.
+  const waiting = useMemo(
+    () => attentionCountsByRoot(collectAttention({ permissions, questions, sessions })),
+    [permissions, questions, sessions],
+  );
+
   const renderSession = useCallback(({ item }: { item: Session }) => {
     const ref = sessionRefForSession(activeConnectionId ?? 'unselected', item);
     const key = sessionKey(ref);
@@ -118,6 +129,7 @@ export default function SessionsScreen() {
     const busy = isBusy(status);
     const statusLabel = status ? (busy ? 'RUNNING' : 'IDLE') : (checkingStatuses ? 'CHECKING' : 'UNKNOWN');
     const opening = openingKey === key;
+    const waitingCount = waiting.get(key) ?? 0;
     return (
       <Pressable
         accessibilityRole="button"
@@ -128,17 +140,22 @@ export default function SessionsScreen() {
         style={({ pressed }) => [styles.sessionCard, pressed && !openingKey && styles.sessionCardPressed, opening && styles.sessionCardOpening]}
         onPress={() => openSession(item)}>
         <View style={styles.sessionTop}>
-          <Text numberOfLines={2} style={styles.sessionTitle}>{item.title || 'Untitled session'}</Text>
+          <Text selectable numberOfLines={2} style={styles.sessionTitle}>{item.title || 'Untitled session'}</Text>
           {opening ? <ActivityIndicator testID={`session-opening-${key}`} size="small" color={palette.primary} /> : (
             <Text style={[styles.status, busy ? styles.busy : styles.idle]}>{statusLabel}</Text>
           )}
         </View>
+        {waitingCount > 0 ? (
+          <Text testID={`session-waiting-${key}`} style={styles.waiting}>
+            {waitingCount} waiting for you
+          </Text>
+        ) : null}
         <Text numberOfLines={1} style={styles.machine}>{item.relayTargetName ?? item.relayTargetID ?? active?.name}</Text>
-        <Text numberOfLines={1} ellipsizeMode="middle" style={styles.muted}>{item.directory ?? item.path ?? 'Unknown directory'}</Text>
+        <Text selectable numberOfLines={1} ellipsizeMode="middle" style={styles.muted}>{item.directory ?? item.path ?? 'Unknown directory'}</Text>
         <Text style={styles.updated}>{formatUpdated(sessionUpdatedAt(item))}</Text>
       </Pressable>
     );
-  }, [active?.name, activeConnectionId, checkingStatuses, openSession, openingKey, statuses]);
+  }, [active?.name, activeConnectionId, checkingStatuses, openSession, openingKey, statuses, waiting]);
 
   if (hydrated && !active) {
     return (
@@ -360,6 +377,7 @@ const styles = StyleSheet.create({
   status: { fontSize: 9, lineHeight: 13, fontWeight: '800' },
   busy: { color: palette.success },
   idle: { color: palette.textMuted },
+  waiting: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, fontSize: 10, fontWeight: '800', color: palette.foregroundOnAccent, backgroundColor: palette.warning },
   updated: { fontSize: 9, lineHeight: 12, color: palette.textMuted },
   centerState: { flex: 1, minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 20 },
   emptyScreen: { flex: 1, justifyContent: 'center', gap: 8, padding: 24, backgroundColor: palette.background },

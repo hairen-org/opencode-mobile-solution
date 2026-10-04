@@ -20,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { ActionModal } from '@/src/components/opencode/ActionModal';
 import { MessageCard } from '@/src/components/opencode/MessageCard';
+import { TranscriptContext } from '@/src/components/opencode/transcript-context';
 import { ModelPickerModal } from '@/src/components/opencode/ModelPickerModal';
 import { QuestionRequestCard } from '@/src/components/opencode/QuestionRequestCard';
 import { PermissionRequestCard } from '@/src/components/opencode/PermissionRequestCard';
@@ -73,6 +74,8 @@ import {
   selectTranscriptWindow,
 } from '@/src/ux/transcript-window';
 
+const PENDING_REQUEST_REFRESH_MS = 30_000;
+
 export default function SessionScreen() {
   const { sessionKey: encodedRouteKey } = useLocalSearchParams<{ sessionKey?: string }>();
   const ref = useMemo(
@@ -109,6 +112,7 @@ export default function SessionScreen() {
     searchFileReferences: state.searchFileReferences,
     sendPrompt: state.sendPrompt,
     respondToPermission: state.respondToPermission,
+    refreshPendingRequests: state.refreshPendingRequests,
     respondToQuestion: state.respondToQuestion,
     rejectQuestion: state.rejectQuestion,
     revertMessage: state.revertMessage,
@@ -214,13 +218,37 @@ export default function SessionScreen() {
   );
   const rawTranscript = key ? store.messages[key] ?? [] : [];
   const transcript = useMemo(() => sortMessagesChronologically(rawTranscript), [rawTranscript]);
+  const latestTranscriptRef = useRef(transcript);
+  latestTranscriptRef.current = transcript;
+  const getTranscript = useCallback(() => latestTranscriptRef.current, []);
   const renderedTranscript = useMemo(
     () => selectTranscriptWindow(transcript, transcriptWindowSize),
     [transcript, transcriptWindowSize],
   );
   const status = key ? store.sessionStatuses[key] : undefined;
-  const questions = key ? store.questions[key] ?? [] : [];
-  const permissions = key ? store.permissions?.[key] ?? [] : [];
+  const ownQuestions = key ? store.questions[key] ?? [] : [];
+  const ownPermissions = key ? store.permissions?.[key] ?? [] : [];
+  // Subagents raise most permission requests, in child sessions nobody has
+  // open. Their requests belong on this screen, labelled with where they came
+  // from; this session's own requests still decide whether the prompt is locked.
+  const subtree = useMemo(() => {
+    const nodes: Array<{ key: string; title?: string }> = [];
+    const visit = (current: NonNullable<typeof node>, depth: number) => {
+      nodes.push({ key: current.key, title: depth === 0 ? undefined : current.session.title || current.session.id });
+      for (const child of current.children) visit(child, depth + 1);
+    };
+    if (node) visit(node, 0);
+    else if (key) nodes.push({ key });
+    return nodes;
+  }, [key, node]);
+  const permissions = useMemo(
+    () => subtree.flatMap(({ key: entryKey, title }) => (store.permissions?.[entryKey] ?? []).map((request) => ({ request, source: title }))),
+    [store.permissions, subtree],
+  );
+  const questions = useMemo(
+    () => subtree.flatMap(({ key: entryKey, title }) => (store.questions[entryKey] ?? []).map((request) => ({ request, source: title }))),
+    [store.questions, subtree],
+  );
   const permissionError = key ? store.permissionErrors?.[key] : null;
   const loadState = key ? store.sessionLoadStates[key] : undefined;
   const nextMessageCursor = key ? store.messageNextCursors[key] : null;
@@ -230,7 +258,7 @@ export default function SessionScreen() {
   const connectionState = key ? store.eventConnectionStates[key] : undefined;
   const running = isRunningStatus(status);
   const pendingPermissions = useMemo(() => getPendingPermissions(transcript), [transcript]);
-  const promptBlocked = isPromptBlocked(transcript) || permissions.length > 0 || questions.length > 0;
+  const promptBlocked = isPromptBlocked(transcript) || ownPermissions.length > 0 || ownQuestions.length > 0;
   const canSend = Boolean(ref && contract && contractFresh && selection?.agentName && selection.model && (prompt.trim() || attachments.length > 0) && !promptBlocked);
   const targetStatuses = useMemo(() => {
     if (!ref) return {};
@@ -278,6 +306,15 @@ export default function SessionScreen() {
     store.subscribeToActiveHost();
     return () => store.unsubscribeFromHost(ref.connectionId);
   }, [key, ref, store.activeSessionKey, store.subscribeToActiveHost, store.unsubscribeFromHost]);
+
+  // The live stream can drop an event without noticing (a phone suspends the
+  // socket, a proxy idles it out). A cheap periodic re-read keeps a pending
+  // gate from going unseen for longer than this.
+  useEffect(() => {
+    if (!ref) return undefined;
+    const timer = setInterval(() => { void store.refreshPendingRequests(ref); }, PENDING_REQUEST_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [ref, store.refreshPendingRequests]);
 
   useEffect(() => {
     setTranscriptAtBottom(true);
@@ -419,8 +456,8 @@ export default function SessionScreen() {
             <Text style={styles.backText}>‹</Text>
           </Pressable>
           <Pressable accessibilityRole="button" testID="session-hierarchy-button" style={styles.headerCopy} onPress={() => setHierarchyVisible(true)}>
-            <Text numberOfLines={1} style={styles.title}>{session.title || session.id}</Text>
-            <Text numberOfLines={1} ellipsizeMode="middle" style={styles.subtitle}>
+            <Text selectable numberOfLines={1} style={styles.title}>{session.title || session.id}</Text>
+            <Text selectable numberOfLines={1} ellipsizeMode="middle" style={styles.subtitle}>
               {session.relayTargetName ?? ref.relayTargetID} · {directory ?? 'unknown directory'}
             </Text>
           </Pressable>
@@ -450,6 +487,7 @@ export default function SessionScreen() {
         {actionError ? <Text selectable testID="session-action-error" style={styles.error}>{actionError}</Text> : null}
 
         <View style={styles.transcriptFrame}>
+          <TranscriptContext.Provider value={getTranscript}>
           <VirtualizedTranscript
             ref={transcriptRef}
             transcriptKey={key}
@@ -463,6 +501,7 @@ export default function SessionScreen() {
             onBottomStateChange={setTranscriptAtBottom}
             onOlderEndReached={revealOlderTranscript}
           />
+          </TranscriptContext.Provider>
           {renderedTranscript.length > 0 ? (
             <Pressable
               accessibilityRole="button"
@@ -490,16 +529,21 @@ export default function SessionScreen() {
         {permissions.length > 0 || questions.length > 0 || permissionError ? (
           <ScrollView testID="session-question-surface" style={styles.questions} contentContainerStyle={styles.questionContent} keyboardShouldPersistTaps="handled">
             {permissionError ? <Text selectable style={styles.error}>{permissionError}</Text> : null}
-            {permissions.map((request) => (
-              <PermissionRequestCard key={request.id} request={request} onReply={handlePermissionReply} />
+            {permissions.map(({ request, source }) => (
+              <View key={request.id}>
+                {source ? <Text selectable testID={`request-source-${request.id}`} style={styles.requestSource}>From subagent · {source}</Text> : null}
+                <PermissionRequestCard request={request} onReply={handlePermissionReply} />
+              </View>
             ))}
-            {questions.map((question) => (
-              <QuestionRequestCard
-                key={question.id}
-                request={question}
-                onReply={(payload) => store.respondToQuestion(ref, payload)}
-                onReject={(requestID) => store.rejectQuestion(ref, requestID)}
-              />
+            {questions.map(({ request: question, source }) => (
+              <View key={question.id}>
+                {source ? <Text selectable testID={`request-source-${question.id}`} style={styles.requestSource}>From subagent · {source}</Text> : null}
+                <QuestionRequestCard
+                  request={question}
+                  onReply={(payload) => store.respondToQuestion(ref, payload)}
+                  onReject={(requestID) => store.rejectQuestion(ref, requestID)}
+                />
+              </View>
             ))}
           </ScrollView>
         ) : null}
@@ -870,6 +914,7 @@ const styles = StyleSheet.create({
   error: { paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, color: palette.error },
   questions: { flexGrow: 0, maxHeight: '40%', backgroundColor: palette.panel },
   questionContent: { gap: 7, padding: 8 },
+  requestSource: { paddingHorizontal: 2, paddingBottom: 3, fontSize: 10, fontWeight: '700', color: palette.warning },
   promptDock: { gap: 3, marginHorizontal: 6, marginBottom: 2, paddingHorizontal: 6, paddingVertical: 4, borderLeftWidth: 2, borderLeftColor: palette.accent, backgroundColor: palette.backgroundElement },
   promptRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 3 },
   promptInput: { flex: 1, minHeight: 34, maxHeight: 84, paddingHorizontal: 3, paddingVertical: 5, fontSize: 13, color: palette.text },

@@ -57,6 +57,18 @@ export interface EventSubscriptionOptions {
   onReconnect?: () => void | Promise<void>;
   onConnectionState?: (state: EventConnectionState, error?: unknown) => void;
   directory?: string;
+  /** 'global' follows every directory on the machine through /global/event. */
+  scope?: 'directory' | 'global';
+}
+
+/** The machine-wide stream wraps each event as { directory, payload }. */
+function unwrapGlobalEvent(event: ServerEvent): ServerEvent | null {
+  const payload = event.payload;
+  if (!payload || typeof payload !== 'object') return null;
+  const inner = payload as { type?: unknown };
+  if (typeof inner.type !== 'string') return null;
+  const directory = typeof event.directory === 'string' ? { directory: event.directory } : {};
+  return { ...(payload as Record<string, unknown>), type: inner.type, ...directory };
 }
 
 export type EventConnectionState = 'connecting' | 'live' | 'reconciling' | 'offline';
@@ -581,7 +593,9 @@ export class OpenCodeClient implements OpenCodeClientLike {
           idleTimer = setTimeout(() => controller.abort(), idleTimeoutMs);
         };
         let reconnectNotified = false;
-        const parser = createSseParser((event) => {
+        const parser = createSseParser((raw) => {
+          const event = options.scope === 'global' ? unwrapGlobalEvent(raw) : raw;
+          if (!event) return;
           onEvent(event);
           if (!reconnectNotified && event.type === 'server.connected') {
             reconnectNotified = true;
@@ -597,7 +611,9 @@ export class OpenCodeClient implements OpenCodeClientLike {
         });
         try {
           const response = await this.rawFetch(
-            `/event${options.directory ? workspaceQuery({ directory: options.directory }) : ''}`,
+            options.scope === 'global'
+              ? '/global/event'
+              : `/event${options.directory ? workspaceQuery({ directory: options.directory }) : ''}`,
             { signal: controller.signal, directory: options.directory },
             async (response) => response,
           );

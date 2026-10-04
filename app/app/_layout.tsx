@@ -10,6 +10,8 @@ import { palette } from '@/src/ui/palette';
 import { flushMobileSessionPersistence, useOpenCodeMobileStore } from '@/src/store/mobile-store';
 import { CommandPalette } from '@/src/components/opencode/CommandPalette';
 import { NoticeToast } from '@/src/components/opencode/NoticeToast';
+import { AttentionBanner } from '@/src/components/opencode/AttentionBanner';
+import { useAttention } from '@/src/ux/use-attention';
 import { settingsModalOptions } from '@/src/ux/settings-navigation';
 import { useDesktopShell, useScreenActions } from '@/src/ux/use-desktop-shell';
 
@@ -52,6 +54,7 @@ export default function RootLayout() {
 function RootLayoutNav() {
   useColorScheme();
   useDesktopShell();
+  const attention = useAttention();
   // Claimed at the root so the key works from any surface; a screen-level claim
   // would make it dead everywhere except that screen.
   const openCommandPalette = useOpenCodeMobileStore((state) => state.openCommandPalette);
@@ -96,6 +99,7 @@ function RootLayoutNav() {
       </Stack>
       <CommandPalette />
       <NoticeToast />
+      <AttentionBanner item={attention.banner} onDismiss={attention.dismiss} />
     </ThemeProvider>
   );
 }
