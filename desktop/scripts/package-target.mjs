@@ -39,6 +39,9 @@ export function packageTargetFor(platform, arch, appName) {
       executable: path.join(bundle, "Contents", "MacOS", appName),
       propertyList: path.join(bundle, "Contents", "Info.plist"),
       icon: "icon.icns",
+      // The linker signature names the binary "Electron"; macOS will not
+      // register such an app for notifications until it is signed as itself.
+      adHocSign: true,
       firstLaunchNote: "unsigned: the first launch needs right-click > Open",
     };
   }
@@ -51,6 +54,7 @@ export function packageTargetFor(platform, arch, appName) {
     executable: path.join(directory, `${appName}.exe`),
     propertyList: null,
     icon: "icon.ico",
+    adHocSign: false,
     firstLaunchNote: "unsigned: SmartScreen warns on the first launch, choose More info > Run anyway",
   };
 }

@@ -12,6 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -112,6 +113,22 @@ if (target.propertyList) {
   } catch {
     fail(`${plistPath} is not a valid property list`);
   }
+}
+
+if (target.adHocSign && process.platform === "darwin") {
+  // Without a signature under its own bundle id the app never appears in
+  // System Settings > Notifications, and every alert it sends is dropped.
+  // codesign refuses Finder metadata, which an iCloud checkout leaves behind.
+  run("/usr/bin/xattr", ["-cr", artifactPath]);
+  run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", "--identifier", "dev.opencode.cockpit", artifactPath]);
+  // A checkout under iCloud tags the bundle folder again within moments, and
+  // strict verification rejects those tags although they are not signed
+  // content. Verify a clean copy instead, which is also what an install gets.
+  const staged = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-sign-"));
+  const stagedApp = path.join(staged, path.basename(artifactPath));
+  run("/usr/bin/ditto", ["--noextattr", "--norsrc", artifactPath, stagedApp]);
+  run("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp]);
+  fs.rmSync(staged, { recursive: true, force: true });
 }
 
 const megabytes = (directorySize(artifactPath) / 1024 / 1024).toFixed(0);

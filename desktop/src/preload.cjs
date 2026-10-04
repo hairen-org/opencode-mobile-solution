@@ -74,6 +74,21 @@ contextBridge.exposeInMainWorld("cockpit", {
     return () => ipcRenderer.removeListener("cockpit:action", listener);
   },
 
+  /** Shows a system notification. Clicking it brings the window back and opens
+   *  `route`, which the shell only accepts if it is a session screen. */
+  notify(payload) {
+    ipcRenderer.send("cockpit:notify", payload);
+  },
+
+  /** Called when the shell wants the page to show a route, after a
+   *  notification click on a window that was already loaded. */
+  onNavigate(handler) {
+    if (typeof handler !== "function") throw new TypeError("onNavigate needs a function");
+    const listener = (_event, route) => handler(route);
+    ipcRenderer.on("cockpit:navigate", listener);
+    return () => ipcRenderer.removeListener("cockpit:navigate", listener);
+  },
+
   /** The resolved keymap, for a help screen and for showing which bindings
    *  collide on this platform. */
   describeKeymap() {

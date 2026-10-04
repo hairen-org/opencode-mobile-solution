@@ -21,6 +21,8 @@ const repoRoot = path.dirname(desktopRoot);
 
 export const ICON_SOURCE = path.join(repoRoot, "app", "assets", "images", "icon.png");
 export const ICON_OUT_DIR = path.join(desktopRoot, "build");
+// Packaged with the app (unlike build/), because the tray loads it at runtime.
+export const TRAY_OUT_DIR = path.join(desktopRoot, "tray");
 
 // The sizes macOS expects in an iconset, as name suffix and pixel size.
 const ICNS_SIZES = [
@@ -123,6 +125,11 @@ export function buildIcons() {
     });
     const ico = path.join(ICON_OUT_DIR, "icon.ico");
     fs.writeFileSync(ico, assembleIco(images));
+
+    // Tray: 18 px with an @2x sibling, which Electron picks on Retina screens.
+    fs.mkdirSync(TRAY_OUT_DIR, { recursive: true });
+    resize(ICON_SOURCE, 18, path.join(TRAY_OUT_DIR, "tray.png"));
+    resize(ICON_SOURCE, 36, path.join(TRAY_OUT_DIR, "tray@2x.png"));
 
     // Read the container back: a wrong offset produces a file of plausible size
     // that Windows silently refuses to draw.

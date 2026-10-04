@@ -95,8 +95,9 @@ test('maps super to Command on macOS and to Control elsewhere', () => {
   assert.equal(normalizeChord('super+a', 'darwin').id, 'meta+a');
   assert.equal(normalizeChord('super+a', 'win32').id, 'ctrl+a');
 
+  // Command+A itself is the system's select-all, not an app action.
   const mac = buildKeymap({ definitions, platform: 'darwin' });
-  assert.equal(resolve(mac, press('a', { meta: true }), { context: 'input' }).action, 'input_select_all');
+  assert.equal(resolve(mac, press('a', { meta: true }), { context: 'input' }).reason, 'system');
 });
 
 test('only the collisions that no static table can resolve are left', () => {
@@ -129,12 +130,12 @@ test('reports the collisions that collapsing super onto Control creates on Windo
   assert.equal(selectAll.chord, 'ctrl+a');
   assert.deepEqual(selectAll.actions.sort(), ['input_line_home', 'input_select_all']);
 
-  // Until someone rebinds one of them, the table's own order decides.
-  assert.equal(resolve(win, press('a', { ctrl: true }), { context: 'input' }).action, 'input_line_home');
+  // Neither wins: ctrl+a is the system's select-all on Windows, so the chord
+  // reaches the page untouched whatever the table says.
+  assert.equal(resolve(win, press('a', { ctrl: true }), { context: 'input' }).reason, 'system');
 
   const rebound = buildKeymap({ definitions, platform: 'win32', overrides: { input_line_home: 'alt+left' } });
   assert.equal(rebound.conflicts.some((conflict) => conflict.chord === 'ctrl+a'), false);
-  assert.equal(resolve(rebound, press('a', { ctrl: true }), { context: 'input' }).action, 'input_select_all');
 });
 
 test('a more specific context wins over a global binding on the same key', () => {
@@ -195,6 +196,30 @@ test('derives a context from the action name, and states the few it cannot', () 
 
   // And the opener of a surface belongs outside it.
   assert.equal(contextFor('diff_open'), 'global');
+});
+
+test('leaves copy and select-all to the system on every platform', () => {
+  // On Windows the TUI table spends ctrl+c on app_exit/input_clear and ctrl+a on
+  // input_line_home; claiming them made text impossible to copy. On macOS the
+  // same holds for Command: meta+a must stay select-all.
+  for (const [platform, held] of [['win32', { ctrl: true }], ['linux', { ctrl: true }], ['darwin', { meta: true }]]) {
+    const keymap = buildKeymap({ definitions, platform });
+    for (const key of ['c', 'a']) {
+      const outcome = resolve(keymap, press(key, held), { context: 'input' });
+      assert.equal(outcome.intercept, false, `${platform} ${key} must not be intercepted`);
+      assert.equal(outcome.action, null, `${platform} ${key} must not fire an app action`);
+    }
+    const claimed = interceptedChords(keymap);
+    const reserved = platform === 'darwin' ? ['meta+c', 'meta+a'] : ['ctrl+c', 'ctrl+a'];
+    for (const chord of reserved) assert.equal(claimed.includes(chord), false, `${platform} claims ${chord}`);
+  }
+});
+
+test('keeps the terminal meaning of ctrl+c on macOS, where it is not copy', () => {
+  const keymap = buildKeymap({ definitions, platform: 'darwin' });
+  const outcome = resolve(keymap, press('c', { ctrl: true }), { context: 'input' });
+  assert.equal(outcome.action, 'input_clear');
+  assert.equal(outcome.intercept, true);
 });
 
 test('reports the chord set to claim once at startup', () => {

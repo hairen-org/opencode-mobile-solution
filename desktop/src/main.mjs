@@ -8,8 +8,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, protocol, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, protocol, shell, Tray } from "electron";
 
+import {
+  contextMenuItems,
+  launchedHidden,
+  loginItemOptions,
+  notificationPayload,
+  readSettings,
+  writeSettings,
+} from "./background.mjs";
 import { buildKeymap, interceptedChords, resolve } from "./keymap.mjs";
 import { chromeForPlatform } from "./window-chrome.mjs";
 
@@ -46,6 +54,17 @@ protocol.registerSchemesAsPrivileged([{
 let keymap;
 let leaderPending = false;
 
+// Resident mode. Closing the window hides it and the shell keeps watching hosts
+// from the tray; only an explicit Quit ends the process. A smoke run is a
+// one-shot check and must exit, so it opts out of all of this.
+const SMOKE = Boolean(process.env.COCKPIT_SMOKE_OUT);
+let mainWindow = null;
+let quitting = false;
+let tray = null;
+let settings = { openAtLogin: true };
+// A Notification that is garbage-collected stops delivering its click.
+const liveNotifications = new Set();
+
 async function serveRenderer(request) {
   const url = new URL(request.url);
   const requested = decodeURIComponent(url.pathname);
@@ -76,9 +95,10 @@ async function serveRenderer(request) {
   return new Response(body, { headers: { "content-type": type } });
 }
 
-function createWindow() {
+function createWindow({ route = "/devices", show = true } = {}) {
   const chrome = chromeForPlatform(process.platform);
   const window = new BrowserWindow({
+    show,
     width: 1180,
     height: 820,
     minWidth: 720,
@@ -91,7 +111,30 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
+      // The hidden window is what keeps watching hosts; a throttled one would
+      // let its event streams time out while the user is elsewhere.
+      backgroundThrottling: false,
     },
+  });
+
+  window.on("close", (event) => {
+    if (quitting || SMOKE) return;
+    event.preventDefault();
+    window.hide();
+  });
+
+  // A dead renderer would leave the tray promising a window that cannot draw.
+  // Replace it, keeping whether it was on screen.
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (quitting || SMOKE) return;
+    process.stderr.write(`cockpit: renderer gone (${details.reason}); reopening\n`);
+    const wasVisible = window.isVisible();
+    window.destroy();
+    mainWindow = createWindow({ show: wasVisible });
+  });
+
+  window.webContents.on("context-menu", (_event, params) => {
+    Menu.buildFromTemplate(contextMenuItems(params)).popup({ window });
   });
 
   // A hidden title bar floats the window buttons over the page, so the strip has
@@ -142,7 +185,7 @@ function createWindow() {
   // The desktop client opens on the machine picker rather than the host list:
   // a laptop reaches several backends on one host, and which one runs the next
   // prompt is a choice worth making before a session is on screen.
-  void window.loadURL(`${ORIGIN}/devices`);
+  void window.loadURL(`${ORIGIN}${route}`);
 
   // A build that produces a bundle and a window that renders it are different
   // claims. With COCKPIT_SMOKE_OUT set the shell proves the second one: it
@@ -346,6 +389,91 @@ ipcMain.handle("cockpit:describe-keymap", () => ({
   })),
 }));
 
+/** The one way back to the window. Every entry point uses it: a notification,
+ *  the tray, the Dock, and launching the app a second time. */
+function revealWindow(route) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow({ route: route ?? "/devices", show: true });
+  } else {
+    if (route) {
+      // A page still loading has not registered its navigation listener yet,
+      // so a message would be lost; loading the route directly cannot be.
+      if (mainWindow.webContents.isLoading()) void mainWindow.loadURL(`${ORIGIN}${route}`);
+      else mainWindow.webContents.send("cockpit:navigate", route);
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+  if (process.platform === "darwin") void app.dock?.show();
+}
+
+ipcMain.on("cockpit:notify", (_event, value) => {
+  const payload = notificationPayload(value);
+  if (!payload || !Notification.isSupported()) return;
+  const notification = new Notification({ title: payload.title, body: payload.body });
+  liveNotifications.add(notification);
+  const release = () => liveNotifications.delete(notification);
+  notification.on("click", () => {
+    release();
+    revealWindow(payload.route ?? undefined);
+  });
+  notification.on("close", release);
+  notification.show();
+});
+
+function trayIcon() {
+  const packaged = path.join(path.dirname(here), "tray", "tray.png");
+  const source = path.join(path.dirname(here), "..", "app", "assets", "images", "icon.png");
+  const image = nativeImage.createFromPath(packaged);
+  if (!image.isEmpty()) return image;
+  return nativeImage.createFromPath(source).resize({ width: 18, height: 18 });
+}
+
+function applyLoginItem() {
+  // Registering the bare Electron binary from a dev checkout would start the
+  // wrong thing at login; only an installed build registers itself.
+  if (!app.isPackaged) return;
+  app.setLoginItemSettings(loginItemOptions(process.platform, settings.openAtLogin));
+}
+
+function buildTray() {
+  tray = new Tray(trayIcon());
+  tray.setToolTip("OpenCode Cockpit");
+  const refreshMenu = () => tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Open OpenCode Cockpit", click: () => revealWindow() },
+    {
+      label: "Start at login",
+      type: "checkbox",
+      checked: settings.openAtLogin,
+      click: (item) => {
+        settings = { ...settings, openAtLogin: item.checked };
+        writeSettings(app.getPath("userData"), settings);
+        applyLoginItem();
+        refreshMenu();
+      },
+    },
+    { type: "separator" },
+    { label: "Quit", click: () => { quitting = true; app.quit(); } },
+  ]));
+  refreshMenu();
+  // On Windows a left click is the expected way back; the menu stays on the
+  // right button. macOS shows the menu on click either way.
+  tray.on("click", () => { if (process.platform !== "darwin") revealWindow(); });
+}
+
+if (!SMOKE && !app.requestSingleInstanceLock()) {
+  // Already running in the tray: the other instance shows its window.
+  app.quit();
+} else {
+  app.on("second-instance", () => revealWindow());
+}
+
+app.on("before-quit", () => { quitting = true; });
+// Windows ends the session without calling quit; a window that refuses to close
+// would hold up the logoff.
+app.on("session-end", () => { quitting = true; });
+
 app.whenReady().then(async () => {
   const definitions = JSON.parse(
     await fs.readFile(path.join(here, "keybinds", "opencode-1.18.18.json"), "utf8"),
@@ -353,18 +481,31 @@ app.whenReady().then(async () => {
   keymap = buildKeymap({ definitions, platform: process.platform });
 
   protocol.handle(SCHEME, serveRenderer);
-  createWindow();
+  if (SMOKE) {
+    mainWindow = createWindow();
+  } else {
+    settings = readSettings(app.getPath("userData"));
+    applyLoginItem();
+    const hidden = launchedHidden({
+      argv: process.argv,
+      platform: process.platform,
+      loginItem: process.platform === "darwin" ? app.getLoginItemSettings() : {},
+    });
+    mainWindow = createWindow({ show: !hidden });
+    if (hidden && process.platform === "darwin") app.dock?.hide();
+    buildTray();
+  }
 
   process.stdout.write(
     `cockpit: leader ${keymap.leader.id}, ${keymap.bindings.length} bindings, ` +
     `${interceptedChords(keymap).length} chords claimed, ${keymap.conflicts.length} conflict(s)\n`,
   );
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  // Clicking the Dock icon must bring the window back even when it is only
+  // hidden, which getAllWindows() would still count.
+  app.on("activate", () => revealWindow());
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (SMOKE) app.quit();
 });

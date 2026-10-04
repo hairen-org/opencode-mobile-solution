@@ -15,6 +15,14 @@ test('a macOS build is a .app bundle whose executable hides inside Contents/MacO
   assert.equal(target.icon, 'icon.icns');
 });
 
+test('a macOS build is re-signed ad hoc under its own bundle id', () => {
+  // The packager leaves only the linker's signature, whose identifier is
+  // "Electron". macOS then never registers the app for notifications, so a
+  // permission alert in the tray would silently never appear.
+  assert.equal(packageTargetFor('darwin', 'arm64', APP).adHocSign, true);
+  assert.equal(packageTargetFor('win32', 'x64', APP).adHocSign, false);
+});
+
 test('a Windows build is a plain directory with an .exe and no property list', () => {
   const target = packageTargetFor('win32', 'x64', APP);
 

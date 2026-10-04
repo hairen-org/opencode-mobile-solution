@@ -30,6 +30,20 @@ const MUST_INTERCEPT = new Set([
 // platform's own clipboard handling for no gain.
 const NEVER_INTERCEPT = new Set(["ctrl+v", "meta+v"]);
 
+// Copy and select-all belong to the system, on whatever modifier the platform
+// uses for them. The TUI spends ctrl+c on exit/clear-input and ctrl+a on
+// line-home; in a window those cost the user the ability to copy any text, and
+// each has another way in (ctrl+d or closing the window, Home, select-all then
+// delete). So these chords are neither claimed nor resolved to an action.
+const SYSTEM_TEXT_CHORDS = {
+  darwin: new Set(["meta+c", "meta+a"]),
+  other: new Set(["ctrl+c", "ctrl+a"]),
+};
+
+export function systemTextChords(platform = process.platform) {
+  return platform === "darwin" ? SYSTEM_TEXT_CHORDS.darwin : SYSTEM_TEXT_CHORDS.other;
+}
+
 // Only one dialog is ever open, so each gets its own context. Without that
 // split every dialog's Enter and arrow keys collide with every other one's.
 const CONTEXT_BY_PREFIX = [
@@ -138,7 +152,7 @@ export function buildKeymap({ definitions, platform = process.platform, override
         context: contextFor(entry.action),
         sequence,
         needsLeader: sequence.length > 1,
-        intercept: shouldIntercept(sequence.length > 1 ? leader : final),
+        intercept: shouldIntercept(sequence.length > 1 ? leader : final, platform),
       });
     }
   }
@@ -172,8 +186,9 @@ function findConflicts(bindings) {
   return conflicts;
 }
 
-function shouldIntercept(chord) {
+function shouldIntercept(chord, platform) {
   if (NEVER_INTERCEPT.has(chord.id)) return false;
+  if (systemTextChords(platform).has(chord.id)) return false;
   return MUST_INTERCEPT.has(chord.id);
 }
 
@@ -201,6 +216,10 @@ const specificity = (context) => (context === "global" ? 1 : 0);
  *  so the caller owns the state and it stays testable. */
 export function resolve(keymap, event, { context = "global", leaderPending = false } = {}) {
   const chord = chordFromEvent(event);
+
+  if (!leaderPending && systemTextChords(keymap.platform).has(chord.id)) {
+    return { action: null, intercept: false, leaderPending: false, reason: "system" };
+  }
 
   if (!leaderPending && chord.id === keymap.leader.id) {
     return { action: null, intercept: true, leaderPending: true, reason: "leader" };
