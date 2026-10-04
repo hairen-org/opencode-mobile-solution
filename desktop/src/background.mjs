@@ -70,3 +70,25 @@ export function notificationPayload(value) {
   if (!title) return null;
   return { title, body, route: notificationRoute(value.route) };
 }
+
+/** Windows identifies an app's notifications by this id. It matches the macOS
+ *  bundle id so both platforms name the app the same way. */
+export const APP_USER_MODEL_ID = "dev.opencode.cockpit";
+// Fixed rather than generated per run: the shortcut written on one launch has
+// to name the same activator on every later launch.
+export const TOAST_ACTIVATOR_CLSID = "{5cf9b771-6d91-4c98-a96a-3fe838711cfb}";
+
+/** Windows shows a toast only for an app that has a Start Menu shortcut with
+ *  its AppUserModelID. An installer would create one; this build is a plain
+ *  folder, so the app writes its own. */
+export function windowsStartMenuShortcut({ appData, execPath }) {
+  return {
+    path: path.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "OpenCode Cockpit.lnk"),
+    details: {
+      target: execPath,
+      description: "OpenCode Cockpit",
+      appUserModelId: APP_USER_MODEL_ID,
+      toastActivatorClsid: TOAST_ACTIVATOR_CLSID,
+    },
+  };
+}

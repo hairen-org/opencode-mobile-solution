@@ -5,17 +5,21 @@
 // itself -- serve the bundle from a real origin, take the keys a window would
 // otherwise spend on itself, and keep the renderer sandboxed.
 
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, protocol, shell, Tray } from "electron";
 
 import {
+  APP_USER_MODEL_ID,
+  TOAST_ACTIVATOR_CLSID,
   contextMenuItems,
   launchedHidden,
   loginItemOptions,
   notificationPayload,
   readSettings,
+  windowsStartMenuShortcut,
   writeSettings,
 } from "./background.mjs";
 import { buildKeymap, interceptedChords, resolve } from "./keymap.mjs";
@@ -53,6 +57,12 @@ protocol.registerSchemesAsPrivileged([{
 
 let keymap;
 let leaderPending = false;
+
+// Both ids have to be set before the first notification is created.
+if (process.platform === "win32") {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
+  app.setToastActivatorCLSID(TOAST_ACTIVATOR_CLSID);
+}
 
 // Resident mode. Closing the window hides it and the shell keeps watching hosts
 // from the tray; only an explicit Quit ends the process. A smoke run is a
@@ -437,6 +447,13 @@ function applyLoginItem() {
   app.setLoginItemSettings(loginItemOptions(process.platform, settings.openAtLogin));
 }
 
+function ensureWindowsShortcut() {
+  if (process.platform !== "win32" || !app.isPackaged) return;
+  const shortcut = windowsStartMenuShortcut({ appData: app.getPath("appData"), execPath: process.execPath });
+  const written = shell.writeShortcutLink(shortcut.path, existsSync(shortcut.path) ? "replace" : "create", shortcut.details);
+  if (!written) process.stderr.write(`cockpit: could not write ${shortcut.path}; Windows will not show notifications\n`);
+}
+
 function buildTray() {
   tray = new Tray(trayIcon());
   tray.setToolTip("OpenCode Cockpit");
@@ -494,6 +511,7 @@ app.whenReady().then(async () => {
     mainWindow = createWindow({ show: !hidden });
     if (hidden && process.platform === "darwin") app.dock?.hide();
     buildTray();
+    ensureWindowsShortcut();
   }
 
   process.stdout.write(

@@ -5,7 +5,10 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
+  APP_USER_MODEL_ID,
   HIDDEN_FLAG,
+  TOAST_ACTIVATOR_CLSID,
+  windowsStartMenuShortcut,
   contextMenuItems,
   launchedHidden,
   loginItemOptions,
@@ -66,4 +69,18 @@ test('the right-click menu offers Copy whenever text is selected', () => {
 
   const nothing = contextMenuItems({ selectionText: '', isEditable: false });
   assert.deepEqual(nothing.map((item) => item.role), ['selectAll']);
+});
+
+test('the Windows Start Menu shortcut carries the ids a toast needs', () => {
+  // Without a Start Menu shortcut that names the same AppUserModelID and toast
+  // activator, Windows drops every notification from an app with no installer.
+  const shortcut = windowsStartMenuShortcut({
+    appData: 'C:\\Users\\me\\AppData\\Roaming',
+    execPath: 'D:\\Apps\\OpenCode Cockpit\\OpenCode Cockpit.exe',
+  });
+  assert.equal(shortcut.path, 'C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\OpenCode Cockpit.lnk');
+  assert.equal(shortcut.details.target, 'D:\\Apps\\OpenCode Cockpit\\OpenCode Cockpit.exe');
+  assert.equal(shortcut.details.appUserModelId, APP_USER_MODEL_ID);
+  assert.equal(shortcut.details.toastActivatorClsid, TOAST_ACTIVATOR_CLSID);
+  assert.match(TOAST_ACTIVATOR_CLSID, /^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$/i);
 });

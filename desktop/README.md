@@ -57,6 +57,7 @@ TUI 靠比"输入态/列表态"更细的焦点规则区分同一个键。直接�
 - **关窗口不退出。** 窗口关闭后程序留在托盘（macOS 是菜单栏），继续监听待处理的权限请求和问题。托盘、Dock、再次启动、点系统通知，都通过同一个函数把窗口找回来；页面进程崩溃会自动重建窗口，所以不会出现提醒弹出来、窗口却打不开的情况。只有托盘里的 Quit 才真正退出。
 - **默认开机自启。** 托盘菜单里的「Start at login」可以关掉，设置保存在用户数据目录的 `cockpit-settings.json`。
 - **macOS 包要自签名。** `npm run package` 会用 bundle id 给 .app 做一次 ad hoc 签名。打包工具默认只留下名为 "Electron" 的链接器签名，macOS 不会把这样的 App 登记进通知中心，系统通知会被悄悄丢掉。安装时请用 `ditto --noextattr --norsrc` 复制，iCloud 留下的扩展属性会让签名校验失败。Windows 包不签名。
+- **Windows 通知要开始菜单快捷方式。** Windows 只给带 AppUserModelID 的开始菜单快捷方式的 App 弹通知。打包版首次启动时会自己写 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\OpenCode Cockpit.lnk`，ID 固定为 `dev.opencode.cockpit`。移动了安装目录的话，重新启动一次就会把快捷方式改指到新位置。
 
 ## 壳与页面的边界
 
