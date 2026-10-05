@@ -1,5 +1,5 @@
 import { memo, useCallback, useContext, useRef, useState, type MutableRefObject } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { MessagePart, MessageWithParts, SessionStatus, ToolPart } from '@/src/opencode/types';
 import { getMessageActions } from '@/src/ux/tui-actions';
@@ -7,7 +7,7 @@ import { partToText } from '@/src/store/mobile-store';
 import { palette } from '@/src/ui/palette';
 import { writeClipboardText } from '@/src/ux/clipboard';
 import { createSubagentCardModel } from '@/src/ux/subagent-card';
-import { conversationText } from '@/src/ux/conversation-text';
+import { conversationHtml, conversationText } from '@/src/ux/conversation-text';
 import {
   collapseToolOutput,
   createToolTranscriptModel,
@@ -31,6 +31,7 @@ import { TextViewModal } from './TextViewModal';
 import { MarkdownText } from './MarkdownText';
 import { SelectableText } from './SelectableText';
 import { TranscriptContext } from './transcript-context';
+import { containsMath } from './math-html';
 
 const shellOutputMaxLines = 10;
 const defaultShellContentColumns = 40;
@@ -162,7 +163,7 @@ function MessageCardBody({
     [callbacksRef],
   );
   const [actionsVisible, setActionsVisible] = useState(false);
-  const [messageTextView, setMessageTextView] = useState<{ title: string; text: string; focusOffset: number } | null>(null);
+  const [messageTextView, setMessageTextView] = useState<{ title: string; text: string; focusOffset: number; html?: string } | null>(null);
   const getTranscript = useContext(TranscriptContext);
   const [messageActionError, setMessageActionError] = useState<string | null>(null);
   const role = message.info.role;
@@ -173,7 +174,10 @@ function MessageCardBody({
     const transcript = getTranscript?.() ?? [];
     if (transcript.some((item) => item.info.id === message.info.id)) {
       const conversation = conversationText(transcript, message.info.id);
-      setMessageTextView({ title: 'Conversation', text: conversation.text, focusOffset: conversation.focusOffset });
+      // Formulas can only be typeset on iOS inside a WebView, so the sheet gets
+      // an HTML version too when there is math to show.
+      const html = Platform.OS === 'ios' && containsMath(conversation.text) ? conversationHtml(transcript, message.info.id) : undefined;
+      setMessageTextView({ title: 'Conversation', text: conversation.text, focusOffset: conversation.focusOffset, html });
       return;
     }
     const own = createTextViewModel({ title: role === 'user' ? 'User message' : 'Message', text: rawText });
@@ -247,6 +251,7 @@ function MessageCardBody({
             text={messageTextView?.text ?? ''}
             prose
             focusOffset={messageTextView?.focusOffset ?? 0}
+            html={messageTextView?.html}
             visible={messageTextView !== null}
             onClose={() => setMessageTextView(null)}
           />

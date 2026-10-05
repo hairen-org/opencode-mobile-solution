@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { palette } from '@/src/ui/palette';
 import { writeClipboardText } from '@/src/ux/clipboard';
 
+import { MathHtmlView } from './MathHtmlView';
 import { SelectableBlock } from './SelectableBlock';
 
 export function TextViewModal({
@@ -13,6 +14,7 @@ export function TextViewModal({
   wordWrap = true,
   prose = false,
   focusOffset = 0,
+  html,
   onClose,
 }: {
   title: string;
@@ -23,10 +25,14 @@ export function TextViewModal({
   prose?: boolean;
   /** Character offset to open the sheet at, e.g. the message it was opened from. */
   focusOffset?: number;
+  /** The same content as HTML with typeset math. Used on iOS, the only place a WebView is needed to show formulas. */
+  html?: string;
   onClose(): void;
 }) {
   const [copyError, setCopyError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  const { height: windowHeight } = useWindowDimensions();
+  const showHtml = Boolean(html) && Platform.OS === 'ios';
   const textStyle = [prose ? styles.prose : styles.mono, wordWrap && styles.wordWrap];
   return (
     <Modal
@@ -57,6 +63,11 @@ export function TextViewModal({
             </Pressable>
           </View>
           {copyError ? <Text selectable testID="text-view-copy-error" style={styles.error}>{copyError}</Text> : null}
+          {showHtml ? (
+            <View testID="text-view-html" style={[styles.textFrame, { height: windowHeight * 0.7 }]}>
+              <MathHtmlView bodyHtml={html ?? ''} scrollable />
+            </View>
+          ) : (
           <ScrollView ref={scrollRef} testID="text-view-scroll" style={styles.textFrame} contentContainerStyle={styles.textContent}>
             {focusOffset > 0 ? (
               // The text before the focus point, laid out invisibly at the same
@@ -71,6 +82,7 @@ export function TextViewModal({
             ) : null}
             <SelectableBlock testID="text-view-content" style={textStyle} text={text || 'No text content'} />
           </ScrollView>
+          )}
         </Pressable>
       </Pressable>
     </Modal>

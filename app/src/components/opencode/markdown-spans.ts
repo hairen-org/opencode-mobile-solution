@@ -47,7 +47,7 @@ function attr(token: Token, name: string) {
 
 export function markdownToSpans(source: string): Span[] {
   if (!source.trim()) return [];
-  const tokens = parser.parse(source, {}) as Token[];
+  const tokens = parser.parse(source, {}) as unknown as Token[];
 
   const spans: Span[] = [];
   const lists: { ordered: boolean; next: number }[] = [];

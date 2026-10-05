@@ -3,13 +3,14 @@
 对照基准：`BB-84C/opencode-mobile-solution` 的 `main`（上游）与本仓库的 `main`。
 以 `git diff upstream/main main -- app/` 实际算出，不是凭印象写的。
 
-一句话：**手机上的界面和上游几乎一样，多出来的是一套为桌面端做的键盘与导航层，以及三个小的使用性修补。**
+一句话：**手机上的界面和上游基本一样，多出来的是一套为桌面端做的键盘与导航层、几处使用性修补，以及 1.2.0 加的任意选字、子 agent 权限、提醒和公式渲染。**
 上游的功能我们一个都没删。
 
 ## 数字
 
-`app/` 目录相对上游：41 个文件改动，+3598 行 / −50 行。其中**新增 27 个文件**，
-删除 0 个文件。那 50 行删除全部来自对既有文件的就地修改，没有移除上游任何功能。
+`app/` 目录相对上游（1.2.0）：86 个文件改动，+6770 行 / −173 行。其中**新增 57 个文件**，
+删除 0 个文件。那 173 行删除全部来自对既有文件的就地修改。上游的功能一个都没移除，
+只有一处交互改了：消息菜单从长按改成常驻的「...」按钮（见第四节）。
 
 ## 我们多出来的东西
 
@@ -43,12 +44,20 @@
 - `diff-preview.tsx`：空状态文案改为中性表述
 - `app.json`：bundle identifier 与版本号是我们自己的（见下）
 
+### 四、1.2.0：选字、子 agent 权限、提醒、公式
+
+- **任意选字**：iOS 上 RN 的 `Text` 只能整段复制。我们改成用 `@bsky.app/react-native-uitextview` 把一整条消息渲染成一个 UITextView（`SelectableText` / `SelectableMarkdown` / `markdown-spans.ts`），消息里任意几个字、跨段落都能选。「...」→「Select text」打开整段对话（`conversation-text.ts`），用来跨消息选中。消息菜单改由常驻的「...」按钮打开，不再用长按，长按留给选字。这是对上游交互的一处改变。
+- **子 agent 的权限请求**：权限请求改为按目录保存，父会话里能看到并直接批准子会话的请求。
+- **提醒**：监听 `/global/event`（`src/ux/attention.ts`、`use-attention.ts`、`AttentionBanner.tsx`），会话列表显示「N waiting for you」角标，手机前台出横幅，桌面端发系统通知。
+- **公式**：`markdown-math.ts` 识别 `$..$`、`\(..\)`、`$$..$$`、`\[..\]`。桌面和网页端用 KaTeX 直接排版（`MathView.web.tsx`）。iOS 上带公式的消息改用 `react-native-webview` 渲染（`MathHtmlView.ios.tsx`、`math-html.ts`），KaTeX 字体内嵌在 `katex-inline-css.generated.ts` 里，升级 katex 后要运行 `npm run build:katex-css` 重新生成。复制时，选区里的公式会变回 `$...$` 源码（`math-copy.ts`）。
+- 新增三个依赖：`@bsky.app/react-native-uitextview`、`react-native-webview`（原生模块，要重新构建原生工程）和 `katex`。
+
 ## 与上游刻意不同的三处
 
 1. **bundle identifier**：我们是 `com.skylerhu.opencodemobile`，上游是
    `com.example.opencodemobile`。这一条必须保持，否则 iOS 会把新装的包当成另一个
    应用，已配对的主机和令牌全部清空。
-2. **版本号**：我们走 `1.1.0`，上游 `app.json` 仍是 `1.0.0`（他们的 1.0.1 / 1.0.3
+2. **版本号**：我们走 `1.2.0`（1.1.0 起分叉），上游 `app.json` 仍是 `1.0.0`（他们的 1.0.1 / 1.0.3
    是 TestFlight 发布编号，没有回写）。分开编号是为了一眼看出这条线含我们的增量。
 3. **仓库范围**：我们删掉了 `clients/macos`、`clients/windows`、`relay/deploy`
    这些 VPS / 内网穿透时代的东西，换成 `host/deploy-macos.sh` 与 tailnet 直连。

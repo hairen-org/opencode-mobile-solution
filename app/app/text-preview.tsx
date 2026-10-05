@@ -24,6 +24,29 @@ const textMessages: MessageWithParts[] = [
     ],
   },
   {
+    info: { id: 'text-preview-math', role: 'assistant', agent: 'build' },
+    parts: [
+      {
+        type: 'text',
+        text: [
+          'The ground-state energy is $E_0 = \\hbar\\omega/2$, and the fidelity obeys \\(F(\\rho,\\sigma) \\le 1\\). Prices like $5 and $10 stay text.',
+          '',
+          '$$',
+          'Z = \\sum_{n=0}^{\\infty} e^{-\\beta E_n} = \\frac{1}{2\\sinh(\\beta\\hbar\\omega/2)}',
+          '$$',
+          '',
+          'A display formula inside a sentence: $$\\int_0^1 x^2\\,dx = \\tfrac{1}{3}$$ then more text.',
+          '',
+          '\\[',
+          '\\mathcal{H} = -J \\sum_{\\langle i,j \\rangle} \\mathbf{S}_i \\cdot \\mathbf{S}_j',
+          '\\]',
+          '',
+          'A broken formula $\\frac{1}{$ should not blank the message.',
+        ].join('\n'),
+      },
+    ],
+  },
+  {
     info: { id: 'text-preview-user', role: 'user' },
     parts: [{ type: 'text', text: 'A user message that should also be selectable.' }],
   },

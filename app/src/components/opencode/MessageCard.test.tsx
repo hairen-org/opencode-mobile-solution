@@ -19,6 +19,7 @@ vi.mock('react-native', async () => {
       React.createElement(name, { ...props, ref } as any, children as any),
     );
   return {
+    Platform: { OS: 'ios', select: (options: any) => options.ios ?? options.default },
     Pressable: host('Pressable'),
     StyleSheet: {
       create: <T extends Record<string, unknown>>(styles: T) => styles,

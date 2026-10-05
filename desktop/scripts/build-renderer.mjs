@@ -47,5 +47,25 @@ const bundleDir = path.join(outputDir, "_expo", "static", "js", "web");
 const bundles = fs.existsSync(bundleDir) ? fs.readdirSync(bundleDir).filter((name) => name.endsWith(".js")) : [];
 if (bundles.length === 0) fail("export finished but produced no javascript bundle");
 
+// Metro copies KaTeX's stylesheet but not the fonts it points at with
+// relative url(fonts/...). Without them every formula falls back to a system
+// font and its glyphs misalign, with no error anywhere. Place the fonts where
+// the stylesheet looks, then check that every font it names is really there.
+const cssDir = path.join(outputDir, "_expo", "static", "css");
+const katexFonts = path.join(appRoot, "node_modules", "katex", "dist", "fonts");
+const stylesheets = fs.existsSync(cssDir) ? fs.readdirSync(cssDir).filter((name) => name.endsWith(".css")) : [];
+const wantedFonts = new Set(
+  stylesheets.flatMap((name) =>
+    [...fs.readFileSync(path.join(cssDir, name), "utf8").matchAll(/url\(["']?fonts\/([^"')?#]+)/g)].map((match) => match[1]),
+  ),
+);
+if (wantedFonts.size > 0) {
+  if (!fs.existsSync(katexFonts)) fail(`a stylesheet needs fonts but ${katexFonts} does not exist`);
+  fs.cpSync(katexFonts, path.join(cssDir, "fonts"), { recursive: true });
+  const missing = [...wantedFonts].filter((font) => !fs.existsSync(path.join(cssDir, "fonts", font)));
+  if (missing.length > 0) fail(`stylesheets reference fonts that were not copied: ${missing.join(", ")}`);
+  process.stdout.write(`math fonts: ${wantedFonts.size} placed beside the stylesheet\n`);
+}
+
 const bytes = bundles.reduce((total, name) => total + fs.statSync(path.join(bundleDir, name)).size, 0);
 process.stdout.write(`renderer ready: ${bundles.length} bundle(s), ${(bytes / 1024 / 1024).toFixed(1)} MB\n`);

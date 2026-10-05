@@ -24,6 +24,7 @@ vi.mock('react-native', async () => {
     Text: host('Text'),
     TextInput: host('TextInput'),
     Platform: { OS: 'ios', select: (options: any) => options.ios ?? options.default },
+    useWindowDimensions: () => ({ width: 390, height: 844 }),
     View: host('View'),
   };
 });

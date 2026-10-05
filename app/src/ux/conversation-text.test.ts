@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MessageWithParts } from '@/src/opencode/types';
 
-import { conversationText } from './conversation-text';
+import { conversationHtml, conversationText } from './conversation-text';
 
 const messages = [
   { info: { id: 'm1', role: 'user' }, parts: [{ type: 'text', text: 'Run the tests' }] },
@@ -28,5 +28,14 @@ describe('conversationText', () => {
     const { text, focusOffset } = conversationText(messages, 'm2');
     expect(text.slice(focusOffset)).toMatch(/^── Assistant · build ──/);
     expect(conversationText(messages, 'm1').focusOffset).toBe(0);
+  });
+});
+
+describe('conversationHtml', () => {
+  it('renders each message as markdown and marks the focused one', () => {
+    const html = conversationHtml(messages, 'm2');
+    expect(html).toContain('<div class="speaker">── You ──</div><p>Run the tests</p>');
+    expect(html).toContain('<div class="speaker" id="focus">── Assistant · build ──</div>');
+    expect(html).toContain('<strong>green</strong>');
   });
 });
