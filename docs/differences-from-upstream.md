@@ -67,7 +67,7 @@
 1. **bundle identifier**：我们是 `com.skylerhu.opencodemobile`，上游是
    `com.example.opencodemobile`。这一条必须保持，否则 iOS 会把新装的包当成另一个
    应用，已配对的主机和令牌全部清空。
-2. **版本号**：我们走 `2.0.0`（1.1.0 起分叉），上游 `app.json` 仍是 `1.0.0`（他们的 1.0.1 / 1.0.3
+2. **版本号**：我们走 `2.0.0`（1.1.0 起分叉；桌面分机 `desktop/package.json` 用同一个版本号），上游 `app.json` 仍是 `1.0.0`（他们的 1.0.1 / 1.0.3
    是 TestFlight 发布编号，没有回写）。分开编号是为了一眼看出这条线含我们的增量。
 3. **仓库范围**：我们删掉了 `clients/macos`、`clients/windows`、`relay/deploy`
    这些 VPS / 内网穿透时代的东西，换成 `host/deploy-macos.sh` 与 tailnet 直连。

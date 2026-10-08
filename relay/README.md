@@ -12,14 +12,15 @@ Mobile App ──permanent device credential──▶ Relay ──▶ authorized
 The relay stores only a SHA-256 hash of each paired device credential and translates
 `Authorization: Bearer <device-token>` (from mobile clients) into
 `Authorization: Basic <user:pass>` (to the local OpenCode server) and enforces each
-client's target/directory scope. It runs on your VPS/reverse-proxy host, behind Caddy or
-nginx.
+client's target/directory scope. It runs on the same host as the backends, bound to
+loopback, and is published to the tailnet by `tailscale serve` (`host/deploy-macos.sh` sets
+this up), or put behind Caddy or nginx where there is no tailnet.
 
 ---
 
 ## Why
 
-OpenCode's `serve` mode exposes a full REST API with HTTP Basic Auth. You can tunnel it to a VPS via SSH (`ssh -R 4096:localhost:4096`). But:
+OpenCode's `serve` mode exposes a full REST API with HTTP Basic Auth. You could hand that one password to every device. But:
 
 1. You don't want every mobile device holding your `OPENCODE_SERVER_PASSWORD`
 2. You want to add/revoke devices individually
@@ -130,9 +131,18 @@ curl http://127.0.0.1:4097/health
 # {"status":"ok","relay":true,"upstream":"127.0.0.1:4096","devices":1}
 ```
 
-### 5. Expose via reverse proxy
+### 5. Publish it
 
-**Caddy:**
+**Tailscale (what `host/deploy-macos.sh` does):**
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:4097
+```
+
+Clients then reach `https://<machine>.<tailnet>.ts.net:8443`. tailscaled terminates TLS,
+issues and renews the certificate, and does not buffer event streams.
+
+**Without a tailnet, a reverse proxy.** Caddy:
 
 ```caddy
 opencode.example.com {
@@ -204,25 +214,18 @@ The manual Bearer/Basic form remains an advanced recovery path in the app; it is
 
 ## Architecture
 
-```
-┌──────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  iOS/Android │────▶│  VPS / Cloud VM  │────▶│  Local Machine    │
-│  Mobile App  │     │                  │     │  (Windows/Mac)    │
-│              │     │  Caddy :443      │     │                   │
-│  Bearer: abc  │     │    │             │     │  opencode serve   │
-│              │     │    ▼             │     │  :4096            │
-│              │     │  relay :4097 ────┼───▶ │  (headless API)   │
-│              │     │    │             │ SSH │                   │
-│              │     │  Basic: user:pass│ -R  │                   │
-└──────────────┘     └──────────────────┘     └──────────────────┘
+```text
+Client (iPhone / desktop) ──Tailscale HTTPS──▶ tailscale serve :8443 ──▶ relay 127.0.0.1:4097
+                                                                          │ Bearer → Basic
+                                                                          ▼ X-OpenCode-Target
+                                                          opencode serve 127.0.0.1:4096 (and more)
 ```
 
-1. **Local machine** runs `opencode serve --port 4096` + `OPENCODE_SERVER_PASSWORD=xxx`
-2. **SSH reverse tunnel**: `ssh -R 4096:localhost:4096 vps` (persistent, auto-reconnect)
-3. **VPS relay** (this repo): listens on `127.0.0.1:4097`, validates bearer tokens, forwards with basic auth to `127.0.0.1:4096` (which is actually the local machine via SSH tunnel)
-4. **Caddy/nginx** terminates TLS, proxies `opencode.example.com → 127.0.0.1:4097`
-5. **Dashboard** authenticates the owner with WebAuthn and issues a two-minute, single-use QR code
-6. **Mobile app** exchanges that code once, stores its no-expiry credential in the Keychain, and connects to every target allowed by the pairing source client
+1. **Host** runs `opencode serve` on loopback with `OPENCODE_SERVER_PASSWORD` set, one process per backend
+2. **Relay** (this package) on the same host listens on `127.0.0.1:4097`, validates bearer tokens, and forwards with Basic auth to the target the client selected
+3. **`tailscale serve`** publishes the relay on the tailnet and terminates TLS; without a tailnet, Caddy or nginx does that job
+4. **Dashboard** authenticates the owner with WebAuthn and issues a two-minute, single-use QR code
+5. **Mobile app** exchanges that code once, stores its no-expiry credential in the Keychain, and connects to every target allowed by the pairing source client
 
 ---
 
@@ -266,7 +269,7 @@ docker run -d \
 
 ## Related Repos
 
-- **[OpenCode Mobile](https://github.com/your-org/opencode-mobile)** — iOS/Android app that connects through this relay
+- **[`app/`](../app) and [`desktop/`](../desktop)** in this repository: the iPhone and desktop clients that connect through this relay
 - **[OpenCode](https://github.com/anomalyco/opencode)** — The AI coding agent this relay fronts
 
 ---
@@ -294,10 +297,10 @@ curl http://127.0.0.1:4097/health
 
 | Symptom | Check |
 |---------|-------|
-| `502 upstream_unreachable` | Is `opencode serve` running? Is the SSH tunnel active? `ss -tlnp \| grep 4096` |
+| `502 upstream_unreachable` | Is `opencode serve` running on the host? `lsof -nP -iTCP:4096 -sTCP:LISTEN` |
 | `401 invalid_token` | Token mismatch. Check `tokens.json` syntax. Regenerate token. |
 | Relay won't start | `sudo journalctl -u opencode-relay -n 30` |
-| Mobile can't connect | Is Caddy running? `sudo systemctl status caddy`. Is DNS pointing to VPS? |
+| Mobile can't connect | Is the client on the tailnet? `tailscale serve status` on the host should list port 8443. Behind a third-party VPN on the client, see `clients/README.md`. |
 
 ---
 

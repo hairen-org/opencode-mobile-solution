@@ -140,4 +140,4 @@ This file freezes the mobile UX direction so implementation does not drift as pa
 - Any UX change that contradicts this file requires explicit user approval before implementation.
 - TDD should include unit tests for mappings that can be expressed without a simulator: command entries, subagent navigation intent, user-message actions, copy fallbacks, thinking cycling, and interrupt arming.
 - End-to-end testing against the real VPS must cover at least host connection, health check, session loading, prompt dispatch, transcript refresh, and one command/overflow surface.
-- The original product spec in `docs/opencode-mobile-spec.md` remains useful for API and architecture, but this file wins for UX hierarchy and TUI behavior.
+- The original product spec in `docs/mobile-spec.md` remains useful for API and architecture, but this file wins for UX hierarchy and TUI behavior.
