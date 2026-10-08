@@ -54,6 +54,9 @@ const mocks = vi.hoisted(() => ({
     permissionErrors: {},
     sessionLoadStates: { [JSON.stringify(['relay', 'mac', 'root'])]: 'idle' },
     sessionErrors: {},
+    sessionFailures: {} as Record<string, any>,
+    dismissSessionFailure: vi.fn(),
+    todos: {} as Record<string, any[]>,
     eventConnectionStates: { [JSON.stringify(['relay', 'mac', 'root'])]: 'live' },
     machineContracts: {
       [JSON.stringify(['relay', 'mac', '/repo'])]: {
@@ -236,6 +239,60 @@ describe('SessionScreen composite route', () => {
     mocks.state.messageNextCursors = { [rootKey]: null };
     mocks.state.olderMessageLoadStates = {};
     mocks.state.olderMessageErrors = {};
+    mocks.state.todos = {};
+    mocks.state.sessionFailures = {};
+    mocks.state.dismissSessionFailure.mockClear();
+    mocks.state.sessionStatuses = {};
+  });
+
+  it('shows the todo list as a folded bar on a phone that expands to every item', async () => {
+    mocks.state.todos = { [rootKey]: [
+      { content: 'Read the code', status: 'completed', priority: 'high' },
+      { content: 'Write the test', status: 'in_progress', priority: 'high' },
+      { content: 'Fix it', status: 'pending', priority: 'medium' },
+    ] };
+    const screen = await renderScreen();
+    expect(text(screen)).toContain('Todos');
+    expect(text(screen)).toContain('1/3');
+    expect(text(screen)).toContain('Now: Write the test');
+    expect(all(screen, 'todo-panel-list')).toHaveLength(0);
+    expect(text(screen)).not.toContain('Fix it');
+
+    await act(async () => find(screen, 'todo-panel-toggle').props.onPress());
+    expect(all(screen, 'todo-panel-list').length).toBeGreaterThan(0);
+    expect(text(screen)).toContain('[✓]');
+    expect(text(screen)).toContain('Fix it');
+  });
+
+  it('hides the todo panel when the agent made no list', async () => {
+    const screen = await renderScreen();
+    expect(all(screen, 'todo-panel')).toHaveLength(0);
+  });
+
+  it('shows why the session stopped in a red box that can be dismissed', async () => {
+    mocks.state.sessionFailures = { [rootKey]: { id: 'evt_1', title: 'API error · 500', message: 'No available Claude accounts support the requested model', at: 1 } };
+    const screen = await renderScreen();
+    expect(text(screen)).toContain('API error · 500');
+    expect(text(screen)).toContain('No available Claude accounts support the requested model');
+    await act(async () => find(screen, 'session-turn-failure-dismiss').props.onPress());
+    expect(mocks.state.dismissSessionFailure).toHaveBeenCalledWith(rootKey);
+  });
+
+  it('does not repeat a failure the transcript already shows on the last reply', async () => {
+    mocks.state.sessionFailures = { [rootKey]: { id: 'evt_1', title: 'API error · 500', message: 'boom', at: 1 } };
+    mocks.state.messages[rootKey] = [
+      { info: { id: 'm1', role: 'user', sessionID: 'root' }, parts: [{ type: 'text', text: 'hello root' }] },
+      { info: { id: 'm2', role: 'assistant', sessionID: 'root', error: { name: 'APIError', data: { message: 'boom', statusCode: 500 } } } as any, parts: [] },
+    ];
+    const screen = await renderScreen();
+    expect(all(screen, 'session-turn-failure')).toHaveLength(0);
+  });
+
+  it('says when the machine is retrying a failed request', async () => {
+    mocks.state.sessionStatuses = { [rootKey]: { type: 'retry', attempt: 2, message: 'Cannot connect to API: socket closed' } as any };
+    const screen = await renderScreen();
+    expect(text(screen)).toContain('Retrying · attempt 2');
+    expect(text(screen)).toContain('Cannot connect to API: socket closed');
   });
 
   it('opens the exact machine-scoped ref, subscribes, and never reads the clipboard on mount', async () => {

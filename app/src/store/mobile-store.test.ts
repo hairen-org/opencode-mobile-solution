@@ -1326,6 +1326,39 @@ describe('mobile store composite relay contract', () => {
     useOpenCodeMobileStore.getState().stopAttentionWatch();
   });
 
+  it('records why a session stopped, from any directory, until a new turn starts', async () => {
+    const { OpenCodeClient } = await import('@/src/opencode/client');
+    const handlers: Array<(event: any) => void> = [];
+    vi.spyOn(OpenCodeClient.prototype, 'subscribeEvents').mockImplementation((handler) => {
+      handlers.push(handler);
+      return () => undefined;
+    });
+    vi.spyOn(OpenCodeClient.prototype, 'listQuestions').mockResolvedValue([]);
+    vi.spyOn(OpenCodeClient.prototype, 'listPermissions').mockResolvedValue([]);
+    const { sessionStateKey, useOpenCodeMobileStore } = await import('./mobile-store');
+    const childKey = sessionStateKey({ connectionId: host.id, relayTargetID: 'mac', sessionId: 'child' });
+    useOpenCodeMobileStore.setState({ connections: [host], activeConnectionId: host.id, activeSessionRef: null, sessionFailures: {},
+      relayTargets: { [host.id]: [{ id: 'mac', name: 'Mac', reachable: true, lastChecked: null }] },
+      sessions: { [host.id]: [{ id: 'root', relayTargetID: 'mac', directory: '/repo' }, { id: 'child', parentID: 'root', relayTargetID: 'mac', directory: '/repo' }] },
+    });
+    useOpenCodeMobileStore.getState().startAttentionWatch();
+
+    handlers[0]({ id: 'evt_1', type: 'session.error', directory: '/repo', properties: { sessionID: 'child', error: {
+      name: 'APIError', data: { message: 'Internal Server Error: No available Claude accounts support the requested model', statusCode: 500 },
+    } } });
+    expect(useOpenCodeMobileStore.getState().sessionFailures[childKey]).toMatchObject({
+      id: 'evt_1', title: 'API error · 500', message: 'Internal Server Error: No available Claude accounts support the requested model',
+    });
+    expect(useOpenCodeMobileStore.getState().sessionStatuses[childKey]).toEqual({ type: 'idle' });
+
+    handlers[0]({ type: 'session.status', directory: '/repo', properties: { sessionID: 'child', status: { type: 'busy' } } });
+    expect(useOpenCodeMobileStore.getState().sessionFailures[childKey]).toBeNull();
+
+    handlers[0]({ type: 'session.error', directory: '/repo', properties: { sessionID: 'child', error: { name: 'MessageAbortedError', data: { message: 'Aborted' } } } });
+    expect(useOpenCodeMobileStore.getState().sessionFailures[childKey]).toBeNull();
+    useOpenCodeMobileStore.getState().stopAttentionWatch();
+  });
+
   it('answering a subagent\'s permission from the parent removes it where it is filed', async () => {
     const { OpenCodeClient } = await import('@/src/opencode/client');
     const respond = vi.spyOn(OpenCodeClient.prototype, 'respondToPermission').mockResolvedValue(undefined);

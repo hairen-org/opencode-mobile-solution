@@ -17,7 +17,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { Session } from '@/src/opencode/types';
 import { useOpenCodeMobileStore } from '@/src/store/mobile-store';
 import { palette } from '@/src/ui/palette';
-import { attentionCountsByRoot, collectAttention } from '@/src/ux/attention';
+import { attentionCountsByRoot, collectAttention, failuresByRoot } from '@/src/ux/attention';
 import { filterAndSortRootSessions, sessionSearchText, sessionUpdatedAt } from '@/src/ux/session-list';
 import { encodeSessionRouteKey, sessionKey, sessionRefForSession } from '@/src/ux/session-forest';
 
@@ -30,6 +30,7 @@ export default function SessionsScreen() {
     sessionStatuses,
     permissions,
     questions,
+    sessionFailures,
     loading,
     error,
     hostSyncErrors,
@@ -48,6 +49,7 @@ export default function SessionsScreen() {
     sessionStatuses: state.sessionStatuses,
     permissions: state.permissions,
     questions: state.questions,
+    sessionFailures: state.sessionFailures,
     loading: state.loading,
     error: state.error,
     hostSyncErrors: state.hostSyncErrors,
@@ -117,10 +119,13 @@ export default function SessionsScreen() {
   );
 
   // Counted against the root, so a parent shows what its subagents wait on.
-  const waiting = useMemo(
-    () => attentionCountsByRoot(collectAttention({ permissions, questions, sessions })),
-    [permissions, questions, sessions],
+  const attention = useMemo(
+    () => collectAttention({ permissions, questions, sessions, failures: sessionFailures }),
+    [permissions, questions, sessions, sessionFailures],
   );
+  const waiting = useMemo(() => attentionCountsByRoot(attention), [attention]);
+  // A stopped session (or one of its subagents) says why on its card.
+  const stopped = useMemo(() => failuresByRoot(attention), [attention]);
 
   const renderSession = useCallback(({ item }: { item: Session }) => {
     const ref = sessionRefForSession(activeConnectionId ?? 'unselected', item);
@@ -130,6 +135,7 @@ export default function SessionsScreen() {
     const statusLabel = status ? (busy ? 'RUNNING' : 'IDLE') : (checkingStatuses ? 'CHECKING' : 'UNKNOWN');
     const opening = openingKey === key;
     const waitingCount = waiting.get(key) ?? 0;
+    const failure = stopped.get(key);
     return (
       <Pressable
         accessibilityRole="button"
@@ -150,12 +156,17 @@ export default function SessionsScreen() {
             {waitingCount} waiting for you
           </Text>
         ) : null}
+        {failure ? (
+          <Text testID={`session-failed-${key}`} numberOfLines={2} style={styles.failed}>
+            Stopped · {failure.summary}
+          </Text>
+        ) : null}
         <Text numberOfLines={1} style={styles.machine}>{item.relayTargetName ?? item.relayTargetID ?? active?.name}</Text>
         <Text selectable numberOfLines={1} ellipsizeMode="middle" style={styles.muted}>{item.directory ?? item.path ?? 'Unknown directory'}</Text>
         <Text style={styles.updated}>{formatUpdated(sessionUpdatedAt(item))}</Text>
       </Pressable>
     );
-  }, [active?.name, activeConnectionId, checkingStatuses, openSession, openingKey, statuses, waiting]);
+  }, [active?.name, activeConnectionId, checkingStatuses, openSession, openingKey, statuses, stopped, waiting]);
 
   if (hydrated && !active) {
     return (
@@ -377,6 +388,7 @@ const styles = StyleSheet.create({
   status: { fontSize: 9, lineHeight: 13, fontWeight: '800' },
   busy: { color: palette.success },
   idle: { color: palette.textMuted },
+  failed: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, fontSize: 11, color: palette.error, backgroundColor: palette.errorBg },
   waiting: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, fontSize: 10, fontWeight: '800', color: palette.foregroundOnAccent, backgroundColor: palette.warning },
   updated: { fontSize: 9, lineHeight: 12, color: palette.textMuted },
   centerState: { flex: 1, minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 20 },

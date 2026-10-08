@@ -21,6 +21,7 @@ export function useAttention() {
     relayTargets: state.relayTargets,
     permissions: state.permissions,
     questions: state.questions,
+    sessionFailures: state.sessionFailures,
     sessions: state.sessions,
     activeSessionKey: state.activeSessionKey,
     startAttentionWatch: state.startAttentionWatch,
@@ -51,8 +52,8 @@ export function useAttention() {
   }, []);
 
   const items = useMemo(
-    () => collectAttention({ permissions: store.permissions, questions: store.questions, sessions: store.sessions }),
-    [store.permissions, store.questions, store.sessions],
+    () => collectAttention({ permissions: store.permissions, questions: store.questions, sessions: store.sessions, failures: store.sessionFailures }),
+    [store.permissions, store.questions, store.sessions, store.sessionFailures],
   );
   const seen = useRef(new Set<string>());
   const [banner, setBanner] = useState<AttentionItem | null>(null);

@@ -8,6 +8,7 @@ import { palette } from '@/src/ui/palette';
 import { writeClipboardText } from '@/src/ux/clipboard';
 import { createSubagentCardModel } from '@/src/ux/subagent-card';
 import { conversationHtml, conversationText } from '@/src/ux/conversation-text';
+import { describeTurnError } from '@/src/ux/turn-error';
 import {
   collapseToolOutput,
   createToolTranscriptModel,
@@ -31,6 +32,7 @@ import { TextViewModal } from './TextViewModal';
 import { MarkdownText } from './MarkdownText';
 import { SelectableText } from './SelectableText';
 import { TranscriptContext } from './transcript-context';
+import { TurnErrorBox } from './TurnErrorBox';
 import { containsMath } from './math-html';
 
 const shellOutputMaxLines = 10;
@@ -184,6 +186,7 @@ function MessageCardBody({
     setMessageTextView({ title: own.title, text: own.text, focusOffset: 0 });
   };
   const transcriptRole = role === 'user' ? 'user' : 'assistant';
+  const turnError = role === 'assistant' ? describeTurnError(message.info.error) : null;
   const content = (
     <>
       <Text selectable style={styles.meta}>
@@ -213,6 +216,7 @@ function MessageCardBody({
           renderQuestionsInline={renderQuestionsInline}
         />
       ))}
+      {turnError ? <TurnErrorBox testID={`message-turn-error-${message.info.id}`} error={turnError} /> : null}
       {showActions ? (
         <>
           <ActionModal

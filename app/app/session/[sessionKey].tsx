@@ -24,6 +24,10 @@ import { TranscriptContext } from '@/src/components/opencode/transcript-context'
 import { ModelPickerModal } from '@/src/components/opencode/ModelPickerModal';
 import { QuestionRequestCard } from '@/src/components/opencode/QuestionRequestCard';
 import { PermissionRequestCard } from '@/src/components/opencode/PermissionRequestCard';
+import { TodoPanel } from '@/src/components/opencode/TodoPanel';
+import { TurnErrorBox } from '@/src/components/opencode/TurnErrorBox';
+import { createTodoBoardModel } from '@/src/ux/todo-board';
+import { describeTurnError } from '@/src/ux/turn-error';
 import {
   VirtualizedTranscript,
   type VirtualizedTranscriptHandle,
@@ -98,6 +102,9 @@ export default function SessionScreen() {
     permissionErrors: state.permissionErrors,
     sessionLoadStates: state.sessionLoadStates,
     sessionErrors: state.sessionErrors,
+    sessionFailures: state.sessionFailures,
+    dismissSessionFailure: state.dismissSessionFailure,
+    todos: state.todos,
     eventConnectionStates: state.eventConnectionStates,
     machineContracts: state.machineContracts,
     contractLoadStates: state.contractLoadStates,
@@ -143,6 +150,9 @@ export default function SessionScreen() {
   const [renameSubmitting, setRenameSubmitting] = useState(false);
   const [showActions, setShowActions] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(false);
+  // The TUI keeps its todo list in a sidebar. Here it is a bar that expands:
+  // open by default on a desktop window, folded on a phone screen.
+  const [todosExpanded, setTodosExpanded] = useState(Platform.OS === 'web');
   const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
   const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
   const [attachVisible, setAttachVisible] = useState(false);
@@ -181,6 +191,8 @@ export default function SessionScreen() {
     'child-session-next': () => setHierarchyVisible(true),
     'child-session-previous': () => setHierarchyVisible(true),
     'parent-session': () => setHierarchyVisible(true),
+    // <leader>b toggles the sidebar in the TUI; its todo list lives in this panel.
+    'toggle-sidebar': () => setTodosExpanded((value) => !value),
   });
 
   const activeHost = ref ? store.connections.find((connection) => connection.id === ref.connectionId) : undefined;
@@ -255,9 +267,23 @@ export default function SessionScreen() {
   const olderMessageLoadState = key ? store.olderMessageLoadStates[key] : undefined;
   const olderMessageError = key ? store.olderMessageErrors[key] : null;
   const sessionError = key ? store.sessionErrors[key] : null;
+  const todos = key ? store.todos[key] : undefined;
+  const failure = key ? store.sessionFailures[key] : null;
   const connectionState = key ? store.eventConnectionStates[key] : undefined;
   const running = isRunningStatus(status);
   const pendingPermissions = useMemo(() => getPendingPermissions(transcript), [transcript]);
+  // The last turn's error already shows in the transcript when the server
+  // stored it on the message; the session-level box covers the rest.
+  const lastAssistantError = useMemo(() => {
+    const last = [...transcript].reverse().find((message) => message.info.role === 'assistant');
+    return describeTurnError(last?.info.error);
+  }, [transcript]);
+  const visibleFailure = failure && lastAssistantError?.message !== failure.message ? failure : null;
+  const todoMenuDetail = (() => {
+    const board = createTodoBoardModel(todos);
+    return board.total === 0 ? 'The agent has not made a todo list' : `${board.finished}/${board.total} done · ${board.summary}`;
+  })();
+  const retrying = status && 'type' in status && status.type === 'retry' ? status : null;
   const promptBlocked = isPromptBlocked(transcript) || ownPermissions.length > 0 || ownQuestions.length > 0;
   const canSend = Boolean(ref && contract && contractFresh && selection?.agentName && selection.model && (prompt.trim() || attachments.length > 0) && !promptBlocked);
   const targetStatuses = useMemo(() => {
@@ -486,6 +512,8 @@ export default function SessionScreen() {
         {olderMessageError ? <Text selectable testID="session-older-error" style={styles.warning}>Older transcript warning · {olderMessageError}</Text> : null}
         {actionError ? <Text selectable testID="session-action-error" style={styles.error}>{actionError}</Text> : null}
 
+        <TodoPanel todos={todos} expanded={todosExpanded} onToggle={() => setTodosExpanded((value) => !value)} />
+
         <View style={styles.transcriptFrame}>
           <TranscriptContext.Provider value={getTranscript}>
           <VirtualizedTranscript
@@ -546,6 +574,29 @@ export default function SessionScreen() {
               </View>
             ))}
           </ScrollView>
+        ) : null}
+
+        {retrying ? (
+          <View testID="session-retrying" style={styles.turnNotice}>
+            <TurnErrorBox
+              error={{
+                aborted: false,
+                title: `Retrying${retrying.attempt ? ` · attempt ${retrying.attempt}` : ''}${retrying.next ? ` · next try ${new Date(retrying.next).toLocaleTimeString()}` : ''}`,
+                message: retrying.message || 'The last request failed; the machine is trying again.',
+              }}
+              maxHeight={80}
+            />
+          </View>
+        ) : null}
+        {visibleFailure && key ? (
+          <View style={styles.turnNotice}>
+            <TurnErrorBox
+              testID="session-turn-failure"
+              error={{ aborted: false, title: visibleFailure.title, message: visibleFailure.message }}
+              onDismiss={() => store.dismissSessionFailure(key)}
+              maxHeight={120}
+            />
+          </View>
         ) : null}
 
         <View testID="session-prompt-surface" style={styles.promptDock}>
@@ -695,6 +746,7 @@ export default function SessionScreen() {
             { id: 'redo', label: 'Redo', disabled: !currentRevertMessageId, onPress: () => redoMessageId ? store.revertMessage(ref, redoMessageId) : store.unrevertSession(ref) },
             { id: 'copy', label: 'Copy transcript', onPress: async () => Clipboard.setStringAsync(store.copySessionTranscript(ref)) },
             { id: 'export', label: 'Export transcript', onPress: async () => Clipboard.setStringAsync(createSessionExportArtifact({ session, messages: transcript })) },
+            { id: 'todos', label: todosExpanded ? 'Hide todo list' : 'Show todo list', detail: todoMenuDetail, disabled: !todos?.length, onPress: () => setTodosExpanded((value) => !value) },
             { id: 'toggle-actions', label: showActions ? 'Hide message actions' : 'Show message actions', onPress: () => setShowActions((value) => !value) },
             { id: 'toggle-time', label: showTimestamps ? 'Hide timestamps' : 'Show timestamps', onPress: () => setShowTimestamps((value) => !value) },
             { id: 'delete-session', label: 'Delete session', detail: 'Asks again before anything is removed', danger: true, onPress: () => setDeleteVisible(true) },
@@ -910,6 +962,7 @@ const styles = StyleSheet.create({
   scrollToLatest: { position: 'absolute', right: 10, bottom: 10, minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 12, borderRadius: 18, backgroundColor: palette.primary },
   scrollToLatestText: { fontSize: 12, fontWeight: '800', color: palette.foregroundOnAccent },
   notice: { paddingHorizontal: 9, paddingVertical: 4, fontSize: 10, color: palette.info, backgroundColor: palette.infoBg },
+  turnNotice: { paddingHorizontal: 12, paddingBottom: 6 },
   warning: { paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, color: palette.warning, backgroundColor: palette.warningBg },
   error: { paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, color: palette.error },
   questions: { flexGrow: 0, maxHeight: '40%', backgroundColor: palette.panel },

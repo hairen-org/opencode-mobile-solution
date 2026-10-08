@@ -11,7 +11,8 @@ import { encodeSessionRouteKey, sessionKey, type SessionRef } from './session-fo
  * with nothing on screen, so everything here is resolved up to the root.
  */
 
-export type AttentionKind = 'permission' | 'question';
+/** `error` is a session that stopped on a failed turn: nothing to answer, but the work is not moving. */
+export type AttentionKind = 'permission' | 'question' | 'error';
 
 export interface AttentionItem {
   id: string;
@@ -104,6 +105,7 @@ export function collectAttention(input: {
   permissions: Record<string, readonly PermissionRequest[]>;
   questions: Record<string, readonly QuestionRequest[]>;
   sessions: Record<string, readonly Session[]>;
+  failures?: Record<string, { id: string; title: string; message: string } | null>;
 }): AttentionItem[] {
   const byKey = sessionLookup(input.sessions);
   const titleOf = (ref: SessionRef) => byKey.get(sessionKey(ref))?.title?.trim() || 'Untitled session';
@@ -120,16 +122,27 @@ export function collectAttention(input: {
   for (const [key, requests] of Object.entries(input.questions)) {
     for (const request of requests) add(key, 'question', request.id, summarizeQuestion(request));
   }
+  for (const [key, failure] of Object.entries(input.failures ?? {})) {
+    if (failure) add(key, 'error', failure.id, clip(`${failure.title}: ${failure.message}`));
+  }
   return items;
 }
 
 export function attentionCountsByRoot(items: readonly AttentionItem[]) {
   const counts = new Map<string, number>();
   for (const item of items) {
+    if (item.kind === 'error') continue;
     const key = sessionKey(item.rootRef);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;
+}
+
+/** The failure to show on each root session's card, if its work stopped on an error. */
+export function failuresByRoot(items: readonly AttentionItem[]) {
+  const failures = new Map<string, AttentionItem>();
+  for (const item of items) if (item.kind === 'error') failures.set(sessionKey(item.rootRef), item);
+  return failures;
 }
 
 export function unseenAttention(items: readonly AttentionItem[], seen: ReadonlySet<string>) {
@@ -145,7 +158,7 @@ export function attentionNotification(item: AttentionItem) {
     ? item.rootTitle
     : `${item.rootTitle} › ${item.sessionTitle}`;
   return {
-    title: item.kind === 'permission' ? 'Permission needed' : 'Question waiting',
+    title: item.kind === 'permission' ? 'Permission needed' : item.kind === 'question' ? 'Question waiting' : 'Session stopped on an error',
     body: `${where}\n${item.summary}`,
     route: attentionRoute(item),
   };
@@ -168,7 +181,7 @@ export function planAttentionDelivery(
     : fresh.length <= NOTIFY_INDIVIDUALLY_UP_TO
       ? fresh.map(attentionNotification)
       : [{
-        title: `${fresh.length} requests need you`,
+        title: `${fresh.length} sessions need you`,
         body: fresh.slice(0, 2).map((item) => attentionNotification(item).body.split('\n')[0]).join('\n'),
         route: attentionRoute(fresh[0]),
       }];

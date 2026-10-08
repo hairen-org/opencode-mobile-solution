@@ -118,16 +118,20 @@ if (target.propertyList) {
 if (target.adHocSign && process.platform === "darwin") {
   // Without a signature under its own bundle id the app never appears in
   // System Settings > Notifications, and every alert it sends is dropped.
-  // codesign refuses Finder metadata, which an iCloud checkout leaves behind.
-  run("/usr/bin/xattr", ["-cr", artifactPath]);
-  run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", "--identifier", "dev.opencode.cockpit", artifactPath]);
-  // A checkout under iCloud tags the bundle folder again within moments, and
-  // strict verification rejects those tags although they are not signed
-  // content. Verify a clean copy instead, which is also what an install gets.
+  //
+  // Sign outside the checkout. Under iCloud the bundle folder is tagged with
+  // Finder metadata again within moments, codesign refuses to sign a bundle
+  // that carries it, and clearing it first only wins the race some of the
+  // time. A copy in the temp directory stays clean; the signed copy then
+  // replaces the build. The tags iCloud adds back afterwards sit outside the
+  // signature and do not matter once installed with ditto --noextattr.
   const staged = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-sign-"));
   const stagedApp = path.join(staged, path.basename(artifactPath));
   run("/usr/bin/ditto", ["--noextattr", "--norsrc", artifactPath, stagedApp]);
+  run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", "--identifier", "dev.opencode.cockpit", stagedApp]);
   run("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp]);
+  fs.rmSync(artifactPath, { recursive: true, force: true });
+  run("/usr/bin/ditto", ["--noextattr", "--norsrc", stagedApp, artifactPath]);
   fs.rmSync(staged, { recursive: true, force: true });
 }
 

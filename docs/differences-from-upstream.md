@@ -3,12 +3,12 @@
 对照基准：`BB-84C/opencode-mobile-solution` 的 `main`（上游）与本仓库的 `main`。
 以 `git diff upstream/main main -- app/` 实际算出，不是凭印象写的。
 
-一句话：**手机上的界面和上游基本一样，多出来的是一套为桌面端做的键盘与导航层、几处使用性修补，以及 1.2.0 加的任意选字、子 agent 权限、提醒和公式渲染。**
+一句话：**手机上的界面和上游基本一样，多出来的是一套为桌面端做的键盘与导航层、几处使用性修补，以及 1.2.0 加的任意选字、子 agent 权限、提醒、公式渲染，和 2.0.0 加的 todo 看板与报错显示。**
 上游的功能我们一个都没删。
 
 ## 数字
 
-`app/` 目录相对上游（1.2.0）：86 个文件改动，+6770 行 / −173 行。其中**新增 57 个文件**，
+`app/` 目录相对上游（2.0.0）：93 个文件改动，+7376 行 / −174 行。其中**新增 63 个文件**，
 删除 0 个文件。那 173 行删除全部来自对既有文件的就地修改。上游的功能一个都没移除，
 只有一处交互改了：消息菜单从长按改成常驻的「...」按钮（见第四节）。
 
@@ -52,12 +52,22 @@
 - **公式**：`markdown-math.ts` 识别 `$..$`、`\(..\)`、`$$..$$`、`\[..\]`。桌面和网页端用 KaTeX 直接排版（`MathView.web.tsx`）。iOS 上带公式的消息改用 `react-native-webview` 渲染（`MathHtmlView.ios.tsx`、`math-html.ts`），KaTeX 字体内嵌在 `katex-inline-css.generated.ts` 里，升级 katex 后要运行 `npm run build:katex-css` 重新生成。复制时，选区里的公式会变回 `$...$` 源码（`math-copy.ts`）。
 - 新增三个依赖：`@bsky.app/react-native-uitextview`、`react-native-webview`（原生模块，要重新构建原生工程）和 `katex`。
 
+### 五、2.0.0：todo 看板与报错显示
+
+- **todo 看板**（`TodoPanel.tsx`、`todo-board.ts`）：TUI 侧栏里的 todo 列表，在会话页顶部做成一条可展开的栏，显示「已完成/总数」和当前进行中的任务，展开后是完整列表（`[✓]` `[•]` `[ ]` `[✗]`）。数据来自 `GET /session/{id}/todo` 和 `todo.updated` 事件，实时更新。桌面默认展开，手机默认收起；桌面上 `ctrl+x b`（TUI 的切换侧栏）可以展开或收起，会话菜单里也有这一项。
+- **报错显示**（`turn-error.ts`、`TurnErrorBox.tsx`）：一个回合失败时，主机不会把它当作输出，而是做两件事：把 `{ name, data: { message } }` 写进那条助手消息的 `info.error`，同时发出 `session.error` 事件。上游两样都没显示，工作停下了，界面上什么也看不到。现在：
+  - 消息上的错误显示成红色框，打开旧会话也能看到；
+  - 没有挂在消息上的错误（例如模型不存在）显示在输入框上方，可以手动关闭，新回合开始或发出新消息后自动消失；
+  - 服务端自动重试时显示「Retrying · attempt N」和原因；
+  - 用户自己点 Stop 只显示灰色的「Interrupted」；
+  - 全局监听也接收 `session.error`，所以子 agent 或别的会话出错时，会话列表上显示红色「Stopped · …」，桌面端弹系统通知，手机端在前台弹横幅。
+
 ## 与上游刻意不同的三处
 
 1. **bundle identifier**：我们是 `com.skylerhu.opencodemobile`，上游是
    `com.example.opencodemobile`。这一条必须保持，否则 iOS 会把新装的包当成另一个
    应用，已配对的主机和令牌全部清空。
-2. **版本号**：我们走 `1.2.0`（1.1.0 起分叉），上游 `app.json` 仍是 `1.0.0`（他们的 1.0.1 / 1.0.3
+2. **版本号**：我们走 `2.0.0`（1.1.0 起分叉），上游 `app.json` 仍是 `1.0.0`（他们的 1.0.1 / 1.0.3
    是 TestFlight 发布编号，没有回写）。分开编号是为了一眼看出这条线含我们的增量。
 3. **仓库范围**：我们删掉了 `clients/macos`、`clients/windows`、`relay/deploy`
    这些 VPS / 内网穿透时代的东西，换成 `host/deploy-macos.sh` 与 tailnet 直连。

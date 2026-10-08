@@ -55,6 +55,7 @@ import type { QuestionSubmission } from '@/src/ux/question-request';
 import { sortMessagesChronologically } from '@/src/ux/message-order';
 import { toFilePart, unsupportedAttachmentReason, type PromptAttachment } from '@/src/ux/prompt-attachments';
 import { replaceDirectoryRequests } from '@/src/ux/attention';
+import { describeTurnError } from '@/src/ux/turn-error';
 import type { ThinkingLevel } from '@/src/ux/tui-actions';
 import { sessionKey, type SessionRef } from '@/src/ux/session-forest';
 
@@ -149,6 +150,8 @@ export interface MobileStore {
   sessionSelections: Record<string, PromptSelection>;
   sessionLoadStates: Record<string, LoadingState>;
   sessionErrors: Record<string, string | null>;
+  /** Why a session's last turn stopped, from `session.error`. Kept apart from load warnings so a reload cannot wipe it. */
+  sessionFailures: Record<string, SessionFailure | null>;
   activeAgentName: string | null;
   activeAgentByHost: Record<string, string>;
   activeVariant?: string;
@@ -195,6 +198,7 @@ export interface MobileStore {
   deleteSession(input: SessionRef | string): Promise<void>;
   showNotice(message: string): void;
   dismissNotice(): void;
+  dismissSessionFailure(key: string): void;
   openCommandPalette(): void;
   closeCommandPalette(): void;
   refreshActiveHost(options?: { background?: boolean }): Promise<void>;
@@ -322,6 +326,7 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
   sessionSelections: {},
   sessionLoadStates: {},
   sessionErrors: {},
+  sessionFailures: {},
   activeAgentName: null,
   activeAgentByHost: {},
   activeVariant: undefined,
@@ -518,6 +523,7 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
         sessionSelections: omitCompositeConnection(state.sessionSelections, id),
         sessionLoadStates: omitCompositeConnection(state.sessionLoadStates, id),
         sessionErrors: omitCompositeConnection(state.sessionErrors, id),
+        sessionFailures: omitCompositeConnection(state.sessionFailures, id),
         machineContracts: omitScopeConnection(state.machineContracts, id),
         contractLoadStates: omitScopeConnection(state.contractLoadStates, id),
         agents: omitScopeConnection(state.agents, id),
@@ -563,6 +569,10 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
 
   dismissNotice() {
     set({ notice: null });
+  },
+
+  dismissSessionFailure(key) {
+    set((state) => (state.sessionFailures[key] ? { sessionFailures: { ...state.sessionFailures, [key]: null } } : {}));
   },
 
   openCommandPalette() {
@@ -1005,6 +1015,8 @@ export const useOpenCodeMobileStore = create<MobileStore>((set, get) => ({
     };
     try {
       await dispatchPrompt(clientFor(connection, ref.relayTargetID), ref.sessionId, trimmed, attachments, get().promptMode, dispatch);
+      // The user has moved on from the failure by sending something new.
+      set((state) => (state.sessionFailures[key] ? { sessionFailures: { ...state.sessionFailures, [key]: null } } : {}));
     } catch (error) {
       const message = errorMessage(error);
       set((state) => ({ error: message, sessionErrors: { ...state.sessionErrors, [key]: message } }));
@@ -2029,6 +2041,13 @@ function applySessionUpdate(state: MobileStore, ref: SessionRef, session: Sessio
  * and nothing on screen. Its shape is `{ name, data: { message } }`, but an
  * unrecognised one must still say something rather than fall back to silence.
  */
+export interface SessionFailure {
+  id: string;
+  title: string;
+  message: string;
+  at: number;
+}
+
 export function serverEventErrorText(properties: Record<string, unknown>): string {
   const candidates = [properties.error, properties.data, properties];
   for (const candidate of candidates) {
@@ -2050,12 +2069,13 @@ function applyServerEvent(state: MobileStore, scopeRef: SessionRef, event: Serve
   const key = sessionStateKey(ref);
 
   if (event.type === 'session.error' || event.type === 'message.error') {
-    const text = serverEventErrorText(properties);
-    return {
-      sessionErrors: { ...state.sessionErrors, [key]: text },
-      // Leave the session marked busy and the spinner never stops.
-      sessionStatuses: { ...state.sessionStatuses, [key]: { type: 'idle' as const } },
-    };
+    // Leave the session marked busy and the spinner never stops.
+    const idle = { sessionStatuses: { ...state.sessionStatuses, [key]: { type: 'idle' as const } } };
+    const described = describeTurnError(properties.error) ?? { aborted: false, title: 'Error', message: serverEventErrorText(properties) };
+    // Stop is the user's own doing; the TUI does not report it either.
+    if (described.aborted) return idle;
+    const failure: SessionFailure = { id: typeof event.id === "string" ? event.id : `${key}:${Date.now()}`, title: described.title, message: described.message, at: Date.now() };
+    return { ...idle, sessionFailures: { ...state.sessionFailures, [key]: failure } };
   }
   if (event.type === 'permission.asked') {
     const request = properties as unknown as PermissionRequest;
@@ -2117,7 +2137,13 @@ function applyServerEvent(state: MobileStore, scopeRef: SessionRef, event: Serve
   }
   if (event.type === 'session.status') {
     const status = recordValue(properties.status) as SessionStatus | undefined;
-    return status ? { sessionStatuses: { ...state.sessionStatuses, [key]: status } } : {};
+    if (!status) return {};
+    // A new turn has started, so the last one's failure is history.
+    const startedAgain = 'type' in status && status.type === 'busy' && state.sessionFailures[key];
+    return {
+      sessionStatuses: { ...state.sessionStatuses, [key]: status },
+      ...(startedAgain ? { sessionFailures: { ...state.sessionFailures, [key]: null } } : {}),
+    };
   }
   if (event.type === 'session.diff') {
     return Array.isArray(properties.diff) ? { diffs: { ...state.diffs, [key]: properties.diff as FileDiff[] } } : {};
@@ -2263,6 +2289,10 @@ function withoutRequest<T extends { id: string }>(record: Record<string, T[]>, r
 }
 
 const ATTENTION_EVENT_TYPES = new Set([
+  // A turn that fails in a session nobody has open (often a subagent) is why
+  // work stops; the watch has to see it, and the status that clears it.
+  'session.error',
+  'session.status',
   'permission.asked',
   'permission.replied',
   'question.asked',

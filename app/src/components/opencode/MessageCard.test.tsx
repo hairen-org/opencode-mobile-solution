@@ -118,6 +118,25 @@ describe('MessageCard rendering boundary', () => {
     expect(sheet.props.text.slice(sheet.props.focusOffset)).toBe('── Assistant ──\nworld');
   });
 
+  it('shows a failed turn in a red box, and an abort only as an interruption', async () => {
+    const failed = {
+      info: { id: 'm-err', sessionID: 'session-1', role: 'assistant', error: { name: 'APIError', data: { message: 'No available Claude accounts', statusCode: 500 } } },
+      parts: [],
+    } as unknown as MessageWithParts;
+    let screen: ReactTestRenderer | undefined;
+    await act(async () => { screen = create(<MessageCard message={failed} />); });
+    expect(screen!.root.findAll((node) => node.props.testID === 'message-turn-error-m-err' && node.props.accessibilityRole === 'alert').length).toBeGreaterThan(0);
+    const texts = screen!.root.findAllByType('Text' as any).map((node) => String(node.props.children));
+    expect(texts).toContain('API error · 500');
+    expect(texts).toContain('No available Claude accounts');
+
+    const aborted = { ...failed, info: { ...failed.info, id: 'm-abort', error: { name: 'MessageAbortedError', data: { message: 'Aborted' } } } } as unknown as MessageWithParts;
+    await act(async () => { screen!.update(<MessageCard message={aborted} />); });
+    const texts2 = screen!.root.findAllByType('Text' as any).map((node) => String(node.props.children));
+    expect(texts2).toContain('Interrupted');
+    expect(texts2).not.toContain('No available Claude accounts');
+  });
+
   it('labels an attached file by name, without printing its bytes', async () => {
     const withFile = {
       info: { id: 'message-2', sessionID: 'session-1', role: 'user' },

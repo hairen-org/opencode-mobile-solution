@@ -15,13 +15,13 @@ export function AttentionBanner({ item, onDismiss }: { item: AttentionItem | nul
       <Pressable
         accessibilityRole="button"
         testID={`attention-banner-${item.id}`}
-        style={styles.banner}
+        style={[styles.banner, item.kind === 'error' && styles.errorBanner]}
         onPress={() => {
           onDismiss();
           router.push(attentionRoute(item) as never);
         }}>
         <View style={styles.copy}>
-          <Text style={styles.title}>{title}</Text>
+          <Text style={[styles.title, item.kind === 'error' && styles.errorTitle]}>{title}</Text>
           <Text numberOfLines={2} style={styles.body}>{body}</Text>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" testID="attention-banner-dismiss" hitSlop={10} onPress={onDismiss}>
@@ -47,6 +47,8 @@ const styles = StyleSheet.create({
     borderColor: palette.warning,
     backgroundColor: palette.backgroundMenu,
   },
+  errorBanner: { borderColor: palette.error },
+  errorTitle: { color: palette.error },
   copy: { flex: 1, gap: 2 },
   title: { fontSize: 12, fontWeight: '800', color: palette.warning },
   body: { fontSize: 12, color: palette.text },

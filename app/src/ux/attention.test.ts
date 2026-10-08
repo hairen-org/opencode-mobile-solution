@@ -6,6 +6,7 @@ import {
   attentionCountsByRoot,
   attentionNotification,
   collectAttention,
+  failuresByRoot,
   planAttentionDelivery,
   replaceDirectoryRequests,
   summarizePermission,
@@ -90,6 +91,27 @@ describe('collectAttention', () => {
   });
 });
 
+describe('failed sessions', () => {
+  const items = collectAttention({
+    permissions: { [key('root')]: [permission('per_1', 'root')] },
+    questions: {},
+    sessions: { [host]: sessions },
+    failures: { [key('child')]: { id: 'evt_9', title: 'API error · 500', message: 'No available Claude accounts' }, [key('other')]: null },
+  });
+
+  it('files a subagent failure under its root, without counting it as something waiting', () => {
+    const failure = items.find((item) => item.kind === 'error')!;
+    expect(failure).toMatchObject({ id: 'evt_9', summary: 'API error · 500: No available Claude accounts' });
+    expect(failure.rootRef.sessionId).toBe('root');
+    expect(attentionCountsByRoot(items).get(key('root'))).toBe(1);
+    expect(failuresByRoot(items).get(key('root'))?.id).toBe('evt_9');
+  });
+
+  it('announces it as a stopped session', () => {
+    expect(attentionNotification(items.find((item) => item.kind === 'error')!).title).toBe('Session stopped on an error');
+  });
+});
+
 describe('summaries and notifications', () => {
   it('shows the command a permission is for, falling back to its patterns', () => {
     expect(summarizePermission(permission('p', 's'))).toBe('bash: npm test');
@@ -139,7 +161,7 @@ describe('planAttentionDelivery', () => {
   it('collapses a burst into one notification', () => {
     const burst = Array.from({ length: 5 }, (_, index) => ({ ...items[0], id: `per_${index}` }));
     const plan = planAttentionDelivery(burst, { canNotify: true, activeKey: null });
-    expect(plan.notifications).toEqual([expect.objectContaining({ title: '5 requests need you' })]);
+    expect(plan.notifications).toEqual([expect.objectContaining({ title: '5 sessions need you' })]);
   });
 
   it('only banners on a phone, and stays quiet when the request is already on screen', () => {

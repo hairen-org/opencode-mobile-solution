@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     sessionStatuses: {},
     permissions: {} as Record<string, any[]>,
     questions: {} as Record<string, any[]>,
+    sessionFailures: {} as Record<string, any>,
     loading: 'idle',
     error: null,
     hostSyncErrors: {} as Record<string, string | null>,
