@@ -45,10 +45,17 @@ fi
 say "device $DEVICE"
 
 cd "$IOS_DIR" || die "cannot enter $IOS_DIR"
-[ -d Pods ] || {
-  say "pods are missing, installing them first"
+# Pods must track package.json. Installing them only when Pods/ was absent let 1.2.0's
+# react-native-webview and react-native-uitextview ship as JS with no native side, which
+# kills the app the moment a session renders a message (2026-10-16).
+APP_DIR="$(cd "$IOS_DIR/.." && pwd)"
+if [ ! -d Pods ] || [ ../package.json -nt Pods/Manifest.lock ] || [ ../package-lock.json -nt Pods/Manifest.lock ] \
+   || ! python3 "$HERE/check-native-deps.py" "$APP_DIR" >/dev/null 2>&1; then
+  say "native dependencies changed since the last pod install, installing pods"
   PATH="/opt/homebrew/bin:$PATH" pod install >/dev/null 2>&1 || die "pod install failed"
-}
+fi
+python3 "$HERE/check-native-deps.py" "$APP_DIR" >&2 \
+  || die "some JS dependencies have no native side; run 'npm install' in app/ and then pod install in app/ios"
 
 say "building (this takes a few minutes)"
 log="$(mktemp -t cockpit-ios-renew)"
