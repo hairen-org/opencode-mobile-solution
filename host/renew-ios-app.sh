@@ -50,9 +50,28 @@ cd "$IOS_DIR" || die "cannot enter $IOS_DIR"
 # kills the app the moment a session renders a message (2026-10-16).
 APP_DIR="$(cd "$IOS_DIR/.." && pwd)"
 if [ ! -d Pods ] || [ ../package.json -nt Pods/Manifest.lock ] || [ ../package-lock.json -nt Pods/Manifest.lock ] \
+   || [ ../app.json -nt Pods/Manifest.lock ] \
    || ! python3 "$HERE/check-native-deps.py" "$APP_DIR" >/dev/null 2>&1; then
+  # ios/ is generated from app.json and the installed packages. Without this the
+  # version, name and permissions stayed whatever the first prebuild wrote: a
+  # 2.0.0 checkout built a binary labelled 1.1.0 (2026-10-24).
+  say "regenerating the native project from app.json"
+  (cd "$APP_DIR" && CI=1 EXPO_NO_GIT_STATUS=1 npx expo prebuild --platform ios --no-install >/dev/null 2>&1) \
+    || die "expo prebuild failed; run 'npx expo prebuild --platform ios' in app/ to see why"
   say "native dependencies changed since the last pod install, installing pods"
-  PATH="/opt/homebrew/bin:$PATH" pod install >/dev/null 2>&1 || die "pod install failed"
+  # A Podfile.lock written for the old versions makes CocoaPods refuse the new
+  # ones ("could not find compatible versions", seen after expo 57.0.24 -> 57.0.31).
+  # ios/ is generated and untracked, so the lock is safe to drop and resolve again.
+  rm -f Podfile.lock
+  # pod install downloads React Native's prebuilt core from Maven, and a dropped
+  # connection mid-download fails the whole run (2026-10-23). Retry before giving up.
+  pod_log="$(mktemp -t cockpit-ios-pods)"
+  for attempt in 1 2 3; do
+    PATH="/opt/homebrew/bin:$PATH" pod install >"$pod_log" 2>&1 && break
+    [ "$attempt" -lt 3 ] || { grep -E "\[!\]|Failed to download" "$pod_log" | head -3 >&2; die "pod install failed three times; full log at $pod_log"; }
+    say "pod install failed (attempt $attempt), retrying"
+    sleep 10
+  done
 fi
 python3 "$HERE/check-native-deps.py" "$APP_DIR" >&2 \
   || die "some JS dependencies have no native side; run 'npm install' in app/ and then pod install in app/ios"
