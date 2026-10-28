@@ -76,6 +76,35 @@ fi
 python3 "$HERE/check-native-deps.py" "$APP_DIR" >&2 \
   || die "some JS dependencies have no native side; run 'npm install' in app/ and then pod install in app/ios"
 
+# Xcode reuses any profile on disk that has not expired yet, even one with a day
+# left, so a "renewal" re-signed with the old expiry and reported success
+# (2026-10-28). Move this app's profiles aside so the build has to fetch a fresh
+# seven-day one; they come back if the build fails.
+PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+PROFILE_STASH="$(mktemp -d -t cockpit-ios-profiles)"
+stashed="$(python3 - "$PROFILE_DIR" "$PROFILE_STASH" "$TEAM.$BUNDLE_ID" <<'PY'
+import glob, os, plistlib, shutil, subprocess, sys
+src, dst, wanted = sys.argv[1:4]
+moved = 0
+for path in glob.glob(os.path.join(src, '*.mobileprovision')):
+    try:
+        profile = plistlib.loads(subprocess.run(['security', 'cms', '-D', '-i', path], capture_output=True).stdout)
+    except Exception:
+        continue
+    if profile.get('Entitlements', {}).get('application-identifier') == wanted:
+        shutil.move(path, os.path.join(dst, os.path.basename(path)))
+        moved += 1
+print(moved)
+PY
+)" || die "could not set the old provisioning profiles aside"
+restore_profiles() {
+  mkdir -p "$PROFILE_DIR"
+  for old in "$PROFILE_STASH"/*.mobileprovision; do
+    [ -e "$old" ] && mv -n "$old" "$PROFILE_DIR/"
+  done
+}
+say "set aside $stashed old profile(s) so Xcode issues a fresh one"
+
 say "building (this takes a few minutes)"
 log="$(mktemp -t cockpit-ios-renew)"
 if ! xcodebuild -workspace "$SCHEME.xcworkspace" -scheme "$SCHEME" \
@@ -83,7 +112,11 @@ if ! xcodebuild -workspace "$SCHEME.xcworkspace" -scheme "$SCHEME" \
       -derivedDataPath "$DERIVED" \
       DEVELOPMENT_TEAM="$TEAM" -allowProvisioningUpdates build >"$log" 2>&1; then
   grep -E "error: " "$log" | grep -v "exit code 0" | head -5 >&2
-  die "build failed; full log at $log"
+  restore_profiles
+  if grep -q "No Accounts" "$log"; then
+    die "Xcode is signed out of the Apple ID, so it cannot issue a profile. Open Xcode > Settings > Accounts, add the Apple ID, then run this again"
+  fi
+  die "build failed; full log at $log (old profiles restored)"
 fi
 
 APP="$DERIVED/Build/Products/Release-iphoneos/$SCHEME.app"
@@ -100,7 +133,13 @@ PY
 )" || die "could not read the embedded provisioning profile"
 days="${expiry##* }"
 say "signed until ${expiry%% *} (${days} days)"
-[ "$days" -ge 1 ] || die "the new build is already expiring; open Xcode once so it can issue a fresh profile"
+# A fresh free-account profile lasts seven days. Anything shorter means the old
+# one was used after all, and installing it would only look like a renewal.
+if [ "$days" -lt 5 ]; then
+  restore_profiles
+  die "the build was signed with a profile that has only ${days} day(s) left, so nothing was renewed; open Xcode > Settings > Accounts and check the Apple ID is still signed in"
+fi
+rm -rf "$PROFILE_STASH"
 
 say "installing"
 xcrun devicectl device install app --device "$DEVICE" "$APP" >/dev/null 2>&1 \
