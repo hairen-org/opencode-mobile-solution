@@ -102,6 +102,7 @@ restore_profiles() {
   for old in "$PROFILE_STASH"/*.mobileprovision; do
     [ -e "$old" ] && mv -n "$old" "$PROFILE_DIR/"
   done
+  rmdir "$PROFILE_STASH" 2>/dev/null
 }
 say "set aside $stashed old profile(s) so Xcode issues a fresh one"
 
